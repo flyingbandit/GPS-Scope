@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.7";
+const PAGE_VERSION = "2026-10-18.8";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1188,7 +1188,13 @@ function renderAna(){
 }
 
 function showVersion(sv){ const el = $("#verTag"); if (!el) return;
-  el.textContent = sv === PAGE_VERSION ? `v${sv}` : `server v${sv||"?"} · page v${PAGE_VERSION} - press Ctrl+F5`;
+  // The page is served no-store, so a mismatch is never the browser cache: either the Pi has a newer
+  // index.html than the program running (GPS Scope wasn't restarted) or the other way round.
+  const msg = !sv ? "server version unknown" : sv === PAGE_VERSION ? `v${sv}`
+    : sv < PAGE_VERSION ? `page v${PAGE_VERSION} · running v${sv} - GPS Scope needs a restart`
+    : `server v${sv} · page v${PAGE_VERSION} - press Ctrl+F5`;
+  el.textContent = msg;
+  el.title = sv && sv < PAGE_VERSION ? "Run update.ps1 again, or: ssh -t <pi> \"sudo systemctl restart gpsscope\"" : "";
   el.style.color = sv === PAGE_VERSION ? "" : "var(--crit)"; }
 /* ---------------- receivers: tab bar, overview, spec ---------------- */
 const RXC = ["--gps","--gal","--bds","--glo","--sbas","--qzss","--navic","--crit"];   // fixed order per receiver
