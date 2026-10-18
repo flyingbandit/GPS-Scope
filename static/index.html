@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.3";
+const PAGE_VERSION = "2026-10-18.4";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1027,7 +1027,7 @@ const cmds = () => [
   ["Copy all runs to your PC", `scp -r ${PI}:~/gpsscope/runs .`, "Lands in a 'runs' folder wherever you run it."],
   ["Watch a GPS live in u-center (while GPS Scope keeps logging)",
    `tcp://${PI.split("@")[1]}:2101`,
-   "In u-center: Receiver > Connection > Network connection, enter this address. GPS1 is :2101, GPS2 :2102 and so on (shown on each receiver card). Read-only: u-center can't change the GPS. Every run also saves raw.ubx per receiver, which u-center opens with File > Open."],
+   "In u-center: Receiver > Connection > Network connection, enter this address. GPS1 is :2101, GPS2 :2102 and so on (shown on each receiver card). u-center can query the GPS but can't change its settings. Every run also saves raw.ubx per receiver, which u-center opens with File > Open."],
   ["Stop typing the password (one-off, makes an SSH key)",
    `ssh-keygen -t ed25519 -N "" -f %USERPROFILE%\\.ssh\\id_ed25519
 type %USERPROFILE%\\.ssh\\id_ed25519.pub | ssh ${PI} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`,

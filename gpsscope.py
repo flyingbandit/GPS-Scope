@@ -49,7 +49,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.3"
+GPSSCOPE_VERSION = "2026-10-18.4"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -934,13 +934,20 @@ class Run:
 # --------------------------------------------------------------------------
 class UbxRelay(threading.Thread):
     """Raw UBX byte stream of one receiver on a TCP port, for u-center (Receiver > Connection >
-    Network connection > tcp://<pi>:<port>). Read-only by default: what u-center sends is discarded
-    unless allow_write is set, so it can't change the GPS behind GPS Scope's back."""
+    Network connection > tcp://<pi>:<port>).
 
-    def __init__(self, port, rid, writer=None):
+    By default u-center may only *ask* the GPS things: UBX polls (MON-VER, NAV-*, CFG polls) and
+    CFG-VALGET are passed to the receiver so u-center can identify it and fill its panes. Anything
+    that would change the GPS (CFG-VALSET, CFG-CFG, resets, log erase, firmware...) and any NMEA is
+    discarded. With allow_write everything u-center sends goes to the GPS."""
+
+    POLL_CLASSES = {0x01, 0x02, 0x06, 0x0A, 0x0B, 0x0D, 0x10, 0x27}   # NAV RXM CFG MON AID TIM ESF SEC
+    QUEUE_MAX = 4096                                                   # frames buffered per client (~10 s)
+
+    def __init__(self, port, rid, writer=None, allow_write=False):
         super().__init__(daemon=True, name=f"ubxtcp-{rid}")
-        self.port, self.rid, self.writer = port, rid, writer
-        self.clients, self.lock = [], threading.Lock()
+        self.port, self.rid, self.writer, self.allow_write = port, rid, writer, allow_write
+        self.clients, self.lock = {}, threading.Lock()      # socket -> deque of pending bytes
         self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("0.0.0.0", port))
@@ -954,49 +961,98 @@ class UbxRelay(threading.Thread):
                 time.sleep(1)
                 continue
             c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            c.settimeout(0.2)
+            c.settimeout(None)
+            q, ev = collections.deque(), threading.Event()
             with self.lock:
-                self.clients.append(c)
-            print(f"[{self.rid}] u-center connected from {addr[0]} (tcp :{self.port}"
-                  f"{', read/write' if self.writer else ', read-only'})", flush=True)
+                self.clients[c] = (q, ev)
+            print(f"[{self.rid}] u-center connected from {addr[0]} (tcp :{self.port}, "
+                  f"{'read/write' if self.allow_write else 'read-only, polls passed'})", flush=True)
+            threading.Thread(target=self._to_client, args=(c, q, ev, addr[0]), daemon=True).start()
             threading.Thread(target=self._from_client, args=(c,), daemon=True).start()
 
+    def _is_query(self, f):
+        cls, mid, ln = f[2], f[3], f[4] | (f[5] << 8)
+        if cls == 0x06 and mid == 0x8B:          # CFG-VALGET: reads config, changes nothing
+            return True
+        return ln == 0 and cls in self.POLL_CLASSES
+
     def _from_client(self, c):
+        buf = bytearray()
         while True:
             try:
                 b = c.recv(4096)
-            except socket.timeout:
-                continue
             except OSError:
                 b = b""
             if not b:
-                self._drop(c)
+                self._drop(c, "disconnected")
                 return
-            if self.writer:
+            if not self.writer:
+                continue
+            if self.allow_write:
                 try:
                     self.writer(b)
                 except Exception:  # noqa: BLE001
                     pass
+                continue
+            buf += b
+            while True:                            # pull whole UBX frames out, skip anything else
+                i = buf.find(b"\xb5\x62")
+                if i < 0:
+                    buf.clear()
+                    break
+                del buf[:i]
+                if len(buf) < 6:
+                    break
+                n = 8 + (buf[4] | (buf[5] << 8))
+                if n > 4096:
+                    del buf[:2]
+                    continue
+                if len(buf) < n:
+                    break
+                f = bytes(buf[:n])
+                del buf[:n]
+                if self._is_query(f):
+                    try:
+                        self.writer(f)
+                    except Exception:  # noqa: BLE001
+                        pass
 
-    def _drop(self, c):
+    def _to_client(self, c, q, ev, who):
+        while True:
+            ev.wait(1.0)
+            ev.clear()
+            with self.lock:
+                if c not in self.clients:
+                    return
+                data = b"".join(q)
+                q.clear()
+            if not data:
+                continue
+            try:
+                c.sendall(data)
+            except OSError:
+                self._drop(c, "send failed")
+                return
+
+    def _drop(self, c, why):
         with self.lock:
-            if c in self.clients:
-                self.clients.remove(c)
+            had = self.clients.pop(c, None)
         try:
             c.close()
         except OSError:
             pass
+        if had:
+            print(f"[{self.rid}] u-center {why} (tcp :{self.port})", flush=True)
 
     def send(self, raw):
         if not self.clients:
             return
         with self.lock:
-            clients = list(self.clients)
-        for c in clients:
-            try:
-                c.sendall(raw)
-            except OSError:          # slow or gone: drop it rather than stall the receiver
-                self._drop(c)
+            for c, (q, ev) in list(self.clients.items()):
+                if len(q) >= self.QUEUE_MAX:       # client far behind: skip frames, never stall the GPS
+                    continue
+                q.append(raw)
+                ev.set()
 
     def count(self):
         return len(self.clients)
@@ -1495,7 +1551,7 @@ class Hub:
             m = re.search(r"(\d+)$", st.rid)
             port = self.ubx_tcp_base + (int(m.group(1)) - 1 if m else len(self.rx) - 1)
             try:
-                st.rxthread.relay = UbxRelay(port, st.rid, st.rxthread.write_raw if self.ubx_tcp_write else None)
+                st.rxthread.relay = UbxRelay(port, st.rid, st.rxthread.write_raw, self.ubx_tcp_write)
                 st.rxthread.relay.start()
                 with st.lock:
                     st.info["ubx_tcp"] = port
