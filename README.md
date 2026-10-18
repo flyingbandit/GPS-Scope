@@ -64,6 +64,24 @@ Join that network on your phone and open `http://10.42.0.1:8080`. Map tiles won'
 
 Satellites move, so compare runs taken close together, and only trust differences bigger than about 1–2 dB.
 
+## On a Windows laptop, through a flight controller
+
+GPS Scope also runs on Windows 10/11 and can monitor the GPS **inside a built quad** through the flight controller's USB port, using Betaflight/INAV GPS passthrough. The GPS stays in its real position with the real receiver, ESCs and VTX around it.
+
+1. Install Python 3 from python.org (tick *Add python.exe to PATH*).
+2. Download this repository (Code → Download ZIP) and unzip it.
+3. Plug the quad into the laptop by USB and **close Betaflight Configurator** (only one program can use the COM port). Power the quad from a battery if the GPS or receiver isn't powered from USB.
+4. Double-click **`start_windows.bat`**. The first run sets up Python packages. It finds the flight controller, switches it to GPS passthrough and opens the dashboard at `http://127.0.0.1:8080`.
+
+Options: `start_windows.bat --fc COM5` names the FC's port; `start_windows.bat --port COM7` uses a GPS on a USB-UART adapter instead. `python gpsscope.py --list-ports` lists the ports.
+
+Notes:
+- Passthrough lasts until the FC is power-cycled; unplug it to return to normal. GPS Scope's GPS settings are in RAM only, so the FC's own GPS setup comes back too.
+- Through the FC, NAV-SAT and NAV-SIG are sent every 5th fix, so everything fits the FC's GPS UART (57600 or 115200). The GPS's baud is never changed.
+- The ELRS receiver keeps sending its own telemetry during passthrough, so receiver interference tests work as normal.
+- Betaflight and INAV only. For ArduPilot, set `SERIAL_PASS1 = 0` and `SERIAL_PASS2` = the GPS's serial port, then use `start_windows.bat --port COMx`.
+- u-center on the same laptop can watch at the same time on `tcp://127.0.0.1:2101`.
+
 ## Several GPS at once
 
 GPS Scope finds every u-blox receiver on its own:
@@ -146,6 +164,7 @@ The M8 has no spectrum analyser. It still reports the jamming indicator, AGC and
 | `ubxpeek.py` | Counts the UBX messages on a u-center relay port. |
 | `install.sh` | Pi installer: packages, UARTs, systemd service. |
 | `update.ps1` | Push an update from a Windows PC to the Pi. |
+| `start_windows.bat` | Run GPS Scope on a Windows laptop, via FC passthrough or a USB-UART GPS. |
 
 ## Contributing
 

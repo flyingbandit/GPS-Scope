@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.10";
+const PAGE_VERSION = "2026-10-18.11";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1258,7 +1258,7 @@ function renderOvCards(){
     return `<div class="rxcard" style="border-left:4px solid ${rxColor(r.id)}">
       <h3><span class="dot ${ok?"ok":"bad"}"></span>${esc(r.meta.name||r.id)} <span class="pill ${esc(r.meta.role)}">${esc(r.meta.role)}</span>${r.inRun?' <span class="rec" title="in run"></span>':""}</h3>
       <div class="spec">${specLine(r.meta)}</div>
-      <div class="muted" style="font-size:11.5px">${esc(r.port||"")} · ${esc(r.info.model||"?")} ${r.info.fw?`fw ${esc(r.info.fw)}`:""}${r.info.uniqid?` · chip ${esc(r.info.uniqid)}`:""}${r.info.ubx_tcp?` · <span title="u-center 2: Add data source > TCP > this address. Use the bare hostname (or the IP): u-center 2 can't look up .local names. u-center can query the GPS but not change it.">u-center tcp://${esc(ucHost())}:${r.info.ubx_tcp}</span>`:""}${ok?"":` · ${esc(r.info.status||"")}`}</div>
+      <div class="muted" style="font-size:11.5px">${esc(r.port||"")} · ${esc(r.info.model||"?")} ${r.info.fw?`fw ${esc(r.info.fw)}`:""}${r.info.uniqid?` · chip ${esc(r.info.uniqid)}`:""}${r.info.via_fc?` · <b>via FC passthrough</b>`:""}${r.info.ubx_tcp?` · <span title="u-center 2: Add data source > TCP > this address. Use the bare hostname (or the IP): u-center 2 can't look up .local names. u-center can query the GPS but not change it.">u-center tcp://${esc(ucHost())}:${r.info.ubx_tcp}</span>`:""}${ok?"":` · ${esc(r.info.status||"")}`}</div>
       ${r.meta.chip_changed ? statusBadge("warn","Different chip on this port than last time - check the spec") : ""}
       <div class="mini">
         <div><div class="k">Fix · SVs</div><div class="v">${esc(r.fix||"–")} <small>${n.used ?? "–"}</small></div></div>

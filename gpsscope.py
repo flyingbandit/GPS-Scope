@@ -33,6 +33,7 @@ import random
 import re
 import socket
 import statistics
+import sys
 import threading
 import time
 import zipfile
@@ -49,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.10"
+GPSSCOPE_VERSION = "2026-10-18.11"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -945,10 +946,16 @@ class UbxRelay(threading.Thread):
     POLL_CLASSES = {0x01, 0x02, 0x06, 0x0A, 0x0B, 0x0D, 0x10, 0x27}   # NAV RXM CFG MON AID TIM ESF SEC
     QUEUE_MAX = 4096                                                   # frames buffered per client (~10 s)
 
-    def __init__(self, port, rid, writer=None, allow_write=False):
+    def __init__(self, port, rid, writer=None, allow_write=False, local_only=False):
         super().__init__(daemon=True, name=f"ubxtcp-{rid}")
         self.port, self.rid, self.writer, self.allow_write = port, rid, writer, allow_write
         self.clients, self.lock = {}, threading.Lock()      # socket -> deque of pending bytes
+        if local_only:                         # web UI is localhost-only, so keep the relay local too
+            self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.srv.bind(("127.0.0.1", port))
+            self.srv.listen(4)
+            return
         try:                                   # IPv4 + IPv6: Windows apps often try a .local name's IPv6 first
             self.srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
             self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1080,9 +1087,10 @@ class UbxRelay(threading.Thread):
 class Receiver(threading.Thread):
     BAUDS = [115200, 38400, 9600, 57600, 230400, 460800]
 
-    def __init__(self, st: State, port, baud, target_baud, keep_nmea):
+    def __init__(self, st: State, port, baud, target_baud, keep_nmea, decimate=1):
         super().__init__(daemon=True, name=f"rx-{st.rid}")
         self.st, self.port, self.baud = st, port, baud
+        self.decimate = max(1, int(decimate))   # NAV-SAT/NAV-SIG every Nth epoch (FC passthrough)
         self.target_baud, self.keep_nmea = target_baud, keep_nmea
         self.ser = None
         self.relay = None            # UbxRelay, set by the Hub
@@ -1227,15 +1235,17 @@ class Receiver(threading.Thread):
     def configure(self, gen9):
         msgs = ["NAV_SAT", "NAV_PVT", "MON_RF", "MON_SPAN", "NAV_SIG"] if gen9 else []
         if gen9:
-            cfg = [(f"CFG_MSGOUT_UBX_{m}_UART1", 1) for m in msgs]
+            big = {"NAV_SAT", "NAV_SIG"}
+            cfg = [(f"CFG_MSGOUT_UBX_{m}_UART1", self.decimate if m in big else 1) for m in msgs]
             if not self.keep_nmea:
                 cfg.append(("CFG_UART1OUTPROT_NMEA", 0))
             cfg.append(("CFG_UART1OUTPROT_UBX", 1))
             self.send(UBXMessage.config_set(1, 0, cfg))
         else:
             for cls, mid in [(0x01, 0x35), (0x01, 0x07), (0x0A, 0x09)]:  # NAV-SAT, NAV-PVT, MON-HW
+                r = self.decimate if (cls, mid) == (0x01, 0x35) else 1
                 self.send(UBXMessage("CFG", "CFG-MSG", SET, msgClass=cls, msgID=mid,
-                                     rateDDC=0, rateUART1=1, rateUART2=0, rateUSB=1, rateSPI=0))
+                                     rateDDC=0, rateUART1=r, rateUART2=0, rateUSB=1, rateSPI=0))
             if not self.keep_nmea:
                 for mid in range(0x00, 0x0E):  # standard NMEA sentences off on UART1
                     self.send(UBXMessage("CFG", "CFG-MSG", SET, msgClass=0xF0, msgID=mid,
@@ -1374,11 +1384,77 @@ class Simulator(threading.Thread):
 # Hub: many receivers, one run / one set of phase marks across all of them
 # --------------------------------------------------------------------------
 SCAN_GLOBS = ["/dev/serial0", "/dev/ttyAMA*", "/dev/ttyUSB*", "/dev/ttyACM*"]
+IS_WIN = os.name == "nt"
+
+
+def realp(dev):
+    """Canonical name for a port. On Windows COM ports aren't files, so realpath would mangle them."""
+    return dev.upper() if IS_WIN else os.path.realpath(dev)
+
+
+def list_serial_ports():
+    """All serial ports, as pyserial sees them (used on Windows, where there are no /dev globs)."""
+    try:
+        from serial.tools import list_ports
+        return list(list_ports.comports())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# USB VID of flight-controller virtual COM ports: STM32, Artery AT32, GigaDevice GD32, some APM boards
+FC_VIDS = {0x0483, 0x2E3C, 0x28E9, 0x1209, 0x2DAE, 0x3162}
+
+
+def find_fc_port():
+    """Best guess at a Betaflight/INAV/ArduPilot flight controller's USB port."""
+    cands = []
+    for p in list_serial_ports():
+        txt = f"{p.description} {p.manufacturer or ''} {p.product or ''}".lower()
+        score = (2 if p.vid in FC_VIDS else 0) + (1 if any(w in txt for w in
+                 ("stm32", "betaflight", "inav", "ardupilot", "virtual com", "at32", "flight")) else 0)
+        if score:
+            cands.append((score, p.device))
+    return max(cands)[1] if cands else None
+
+
+def fc_passthrough(port, log=print):
+    """Put a Betaflight/INAV flight controller into GPS passthrough on its USB port.
+    Afterwards the port carries the GPS's own byte stream until the FC is power-cycled."""
+    s = serial.Serial(port, 115200, timeout=0.3)
+    try:
+        s.reset_input_buffer()
+        end, buf = time.time() + 1.0, b""
+        while time.time() < end:                 # already passing through? (GPS data arriving unasked)
+            buf += s.read(4096)
+        if buf.count(b"\xb5\x62") >= 2 or len(re.findall(rb"\$G[NPLAB][A-Z]{3},", buf)) >= 2:
+            log(f"[fc] {port} is already in GPS passthrough")
+            return True
+        s.write(b"#")                              # enter the CLI
+        end, buf = time.time() + 3, b""
+        while time.time() < end and b"CLI" not in buf and not buf.rstrip().endswith(b"#"):
+            buf += s.read(256)
+        if b"CLI" not in buf and b"#" not in buf:
+            raise IOError(f"no Betaflight/INAV CLI on {port} (is it the flight controller, and is "
+                          "Betaflight Configurator closed?). ArduPilot: set SERIAL_PASS1/2 instead.")
+        s.write(b"gpspassthrough\r\n")
+        end, buf = time.time() + 3, b""
+        while time.time() < end:
+            buf += s.read(4096)
+            if buf.count(b"\xb5\x62") >= 2 or len(re.findall(rb"\$G[NPLAB][A-Z]{3},", buf)) >= 2:
+                log(f"[fc] {port}: GPS passthrough on, GPS data flowing")
+                return True
+        txt = " ".join(buf.decode(errors="ignore").split())
+        if "error" in txt.lower() or "unknown" in txt.lower():
+            raise IOError(f"FC refused passthrough: {txt[:200]} - is a GPS set up on one of its UARTs?")
+        log(f"[fc] {port}: passthrough requested but no GPS data yet ({txt[:80]}); waiting for the GPS")
+        return True
+    finally:
+        s.close()
 
 
 def never_scan():
     """Ports we must not touch: the Bluetooth UART on Pi 3/4 (/dev/serial1) and user exclusions."""
-    out = set(os.path.realpath(p) for p in os.environ.get("GPS_SCAN_EXCLUDE", "").split(",") if p)
+    out = set(realp(p) for p in os.environ.get("GPS_SCAN_EXCLUDE", "").split(",") if p)
     if os.path.exists("/dev/serial1"):
         out.add(os.path.realpath("/dev/serial1"))
     return out
@@ -1386,6 +1462,8 @@ def never_scan():
 
 def port_key(dev):
     """Stable name for a physical port: /dev/serial/by-path for USB sockets, else the device."""
+    if IS_WIN:
+        return dev.upper()
     real = os.path.realpath(dev)
     bp = "/dev/serial/by-path"
     if os.path.isdir(bp):
@@ -1405,6 +1483,11 @@ UART_ADDR = {"fe201000": ("UART0", "GPIO14/15"), "7e201000": ("UART0", "GPIO14/1
 
 
 def port_label(key, dev):
+    if IS_WIN:
+        for p in list_serial_ports():
+            if p.device.upper() == dev.upper():
+                return f"{p.device} ({p.description})" if p.description and p.description != p.device else p.device
+        return dev
     m = re.search(r"usb-0:([\d.]+):", key)
     if m:
         return f"USB port {m.group(1)}"
@@ -1437,6 +1520,7 @@ class Hub:
             self.cfg = {}
         self.keep_nmea, self.set_baud = keep_nmea, set_baud
         self.ubx_tcp_base, self.ubx_tcp_write = 0, False
+        self.local_only = False
         self.run = None              # {"id","label","start","notes"}
         self.sim_interference = False
         self.busy_ports = set()
@@ -1535,9 +1619,10 @@ class Hub:
         while True:
             try:
                 seen = set(never_scan())
-                for g in SCAN_GLOBS:
-                    for dev in sorted(glob.glob(g)):
-                        real = os.path.realpath(dev)
+                groups = [[p.device for p in list_serial_ports()]] if IS_WIN else [sorted(glob.glob(g)) for g in SCAN_GLOBS]
+                for devs in groups:
+                    for dev in devs:
+                        real = realp(dev)
                         if real in seen or real in self.busy_ports:
                             continue
                         seen.add(real)
@@ -1545,7 +1630,7 @@ class Hub:
                         same = [st for st in self.rx.values() if st.port_key == key]
                         if same:   # same physical socket re-enumerated under a new name (e.g. ttyUSB0 -> ttyUSB2)
                             st = same[0]
-                            if os.path.realpath(st.port) != real and "stream" not in (st.info.get("status") or ""):
+                            if realp(st.port) != real and "stream" not in (st.info.get("status") or ""):
                                 print(f"[scan] {st.rid} moved {st.port} -> {dev}", flush=True)
                                 st.port = dev
                                 if getattr(st, "rxthread", None):
@@ -1560,21 +1645,28 @@ class Hub:
                 print(f"[scan] {e}", flush=True)
             time.sleep(every)
 
-    def start_receiver(self, dev, baud=None):
+    def start_receiver(self, dev, baud=None, via_fc=False):
         st = self.add(dev)
-        self.busy_ports.add(os.path.realpath(dev))
+        self.busy_ports.add(realp(dev))
         if self.run:
             self._open_run_for(st)
-        st.rxthread = Receiver(st, dev, baud, self.set_baud or None, self.keep_nmea)
+        # Through an FC the GPS<->FC UART baud is fixed by the FC, so never change the GPS's baud there,
+        # and thin out the big per-epoch messages so they fit a 57600/115200 link.
+        st.rxthread = Receiver(st, dev, baud, None if via_fc else (self.set_baud or None), self.keep_nmea,
+                               decimate=5 if via_fc else 1)
+        if via_fc:
+            with st.lock:
+                st.info["via_fc"] = True
         if self.ubx_tcp_base:
             m = re.search(r"(\d+)$", st.rid)
             port = self.ubx_tcp_base + (int(m.group(1)) - 1 if m else len(self.rx) - 1)
             try:
-                st.rxthread.relay = UbxRelay(port, st.rid, st.rxthread.write_raw, self.ubx_tcp_write)
+                st.rxthread.relay = UbxRelay(port, st.rid, st.rxthread.write_raw, self.ubx_tcp_write,
+                                             local_only=self.local_only)
                 st.rxthread.relay.start()
                 with st.lock:
                     st.info["ubx_tcp"] = port
-                print(f"[{st.rid}] u-center: tcp://<this Pi>:{port}", flush=True)
+                print(f"[{st.rid}] u-center: tcp://<this computer>:{port}", flush=True)
             except OSError as e:
                 print(f"[{st.rid}] u-center relay on :{port} unavailable: {e}", flush=True)
         st.rxthread.start()
@@ -1666,7 +1758,7 @@ class Hub:
                 h = st.history[-1] if st.history else {}
                 out.append({
                     "id": st.rid, "port": st.port_label, "dev": st.port, "meta": st.meta,
-                    "info": {k: st.info.get(k) for k in ("status", "model", "fw", "protver", "uniqid", "spectrum", "sim", "baud", "ubx_tcp")},
+                    "info": {k: st.info.get(k) for k in ("status", "model", "fw", "protver", "uniqid", "spectrum", "sim", "baud", "ubx_tcp", "via_fc")},
                     "fix": st.pvt.get("fix"), "fixType": st.pvt.get("fixType"),
                     "now": {k: h.get(k) for k in ("cnoTop", "used", "tracked", "gainCut", "agcDrop", "spikes",
                                                   "runErr", "hAcc", "pga", "jamInd")},
@@ -1968,10 +2060,18 @@ def make_app(hub: Hub) -> Flask:
 
 
 def main():
+    if os.name == "nt" and not sys.flags.utf8_mode:
+        # Windows defaults to cp1252 for files and the console; logs and messages use Δ, →, · ...
+        import subprocess
+        raise SystemExit(subprocess.call([sys.executable, "-X", "utf8"] + sys.argv))
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", action="append", default=[],
                     help="serial port with a GPS; repeat for several. Probed actively. "
                          "Without --port (or with --scan) all serial ports are scanned listen-only.")
+    ap.add_argument("--fc", metavar="PORT|auto",
+                    help="flight controller on USB (Betaflight/INAV): switch it to GPS passthrough and monitor its GPS. "
+                         "'auto' picks the FC's COM port. Implies --no-scan unless --scan is given")
+    ap.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
     ap.add_argument("--scan", action="store_true", help="also scan for receivers when --port is given")
     ap.add_argument("--no-scan", action="store_true", help="never scan, only use --port")
     ap.add_argument("--exclude", action="append", default=[],
@@ -1993,11 +2093,16 @@ def main():
     ap.add_argument("--sim-count", type=int, default=1, help="number of simulated receivers (first is a control)")
     a = ap.parse_args()
 
+    if a.list_ports:
+        for p in list_serial_ports():
+            print(f"{p.device:12} vid={p.vid and hex(p.vid)} {p.description}")
+        return
     globals()["PGA_DB_PER_STEP"] = a.pga_db_per_step
     if a.exclude:
         os.environ["GPS_SCAN_EXCLUDE"] = ",".join(a.exclude + [os.environ.get("GPS_SCAN_EXCLUDE", "")])
     hub = Hub(a.logdir, a.keep_nmea, a.set_baud)
     hub.ubx_tcp_base, hub.ubx_tcp_write = a.ubx_tcp, a.ubx_tcp_write
+    hub.local_only = a.http.rsplit(":", 1)[0] in ("127.0.0.1", "localhost")
     if a.sim:
         n = max(1, a.sim_count)
         for i in range(n):
@@ -2011,9 +2116,17 @@ def main():
     else:
         if serial is None:
             raise SystemExit("pyserial / pyubx2 not installed - run: pip install pyubx2 pyserial flask")
+        if a.fc:
+            fc = find_fc_port() if a.fc.lower() == "auto" else a.fc
+            if not fc:
+                raise SystemExit("No flight controller found on USB. Plug it in, close Betaflight Configurator, "
+                                 "or name the port: --fc COM5  (python gpsscope.py --list-ports shows them)")
+            fc_passthrough(fc)
+            time.sleep(0.5)
+            hub.start_receiver(fc, baud=115200, via_fc=True)
         for dev in a.port:
             hub.start_receiver(dev, baud=a.baud or None)
-        if (not a.port or a.scan) and not a.no_scan:
+        if (not (a.port or a.fc) or a.scan) and not a.no_scan and not (IS_WIN and not a.scan):
             threading.Thread(target=hub.scan_loop, daemon=True, name="scan").start()
 
     host, port = a.http.rsplit(":", 1)

@@ -3,3 +3,4 @@
 *.py text eol=lf
 *.ps1 text eol=crlf
 *.png binary
+*.bat text eol=crlf
