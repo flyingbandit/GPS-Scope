@@ -1,0 +1,14 @@
+# Recorded data - contains real positions. Share runs with share.py instead.
+runs/
+*.ubx
+*_shareable.zip
+
+# Local settings
+pi-target.txt
+venv/
+static/vendor/
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

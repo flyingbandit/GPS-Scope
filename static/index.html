@@ -1,0 +1,1363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS Scope</title>
+<link rel="stylesheet" href="/static/vendor/leaflet.css" onerror="this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'">
+<style>
+:root{
+  color-scheme: light;
+  --page:#f9f9f7; --surface:#fcfcfb; --surface-2:#f2f1ed;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --accent:#2a78d6;
+  --gps:#2a78d6; --gal:#eb6834; --bds:#1baf7a; --glo:#eda100; --sbas:#e87ba4; --qzss:#008300; --navic:#6250d6;
+  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --marker:#6250d6;
+  --good-ink:#006300;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --accent:#3987e5;
+    --gps:#3987e5; --gal:#d95926; --bds:#199e70; --glo:#c98500; --sbas:#d55181; --qzss:#008300; --navic:#9085e9;
+    --marker:#9085e9; --good-ink:#0ca30c;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321;
+  --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --accent:#3987e5;
+  --gps:#3987e5; --gal:#d95926; --bds:#199e70; --glo:#c98500; --sbas:#d55181; --qzss:#008300; --navic:#9085e9;
+  --marker:#9085e9; --good-ink:#0ca30c;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page);color:var(--ink);
+  font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+button,input,select{font:inherit;color:inherit}
+.num,table td,.tile .v{font-variant-numeric:tabular-nums}
+header{position:relative;z-index:1000;background:var(--page);border-bottom:1px solid var(--ring);
+  display:flex;align-items:center;gap:12px;padding:10px 16px;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.01em;white-space:nowrap}
+.dev{color:var(--ink-2);font-size:12px;display:flex;gap:6px;align-items:center;min-width:0}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.dot.ok{background:var(--good)} .dot.bad{background:var(--crit)}
+.spacer{flex:1}
+.btn{border:1px solid var(--ring);background:var(--surface);border-radius:8px;padding:6px 11px;cursor:pointer;
+  white-space:nowrap}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{background:var(--crit);border-color:var(--crit);color:#fff}
+.btn.sm{padding:3px 8px;font-size:12px}
+.btn.on{outline:2px solid var(--accent);outline-offset:-2px}
+main{padding:12px 16px 40px;display:grid;gap:12px;grid-template-columns:minmax(0,1fr);margin:0 auto}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:12px 14px;min-width:0}
+#tilesCard{padding:10px}
+.chartwrap.fill{height:var(--h,260px)}
+canvas.fill{position:absolute;inset:0;width:100%;height:100%}
+#map{position:absolute;inset:0;border-radius:10px;border:1px solid var(--ring);z-index:0}
+.reflin{font-size:12px;color:var(--ink-2);margin-top:6px;display:flex;gap:8px;align-items:center;min-width:0}
+.reflin #refTxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* tablet / small laptop: two columns */
+@media (min-width:820px) and (max-width:1199px){
+  main{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  #tilesCard,#feCard,#runsCard,#satsCard,#cnoCard,#anaCard{grid-column:1/-1}
+}
+/* laptop (16:10, 16:9): six live panels fill the first screen */
+@media (min-width:1200px){
+  header{position:sticky;top:0;flex-wrap:nowrap;padding:7px 14px;gap:14px}
+  .dev{max-width:24vw;overflow:hidden;white-space:nowrap}
+  .dev span:last-child{overflow:hidden;text-overflow:ellipsis}
+  #runBar{flex:1 1 auto;max-width:760px;flex-wrap:nowrap;order:0}
+  main{padding:10px 14px 30px;gap:10px;
+    --row:max(270px, calc((100vh - 166px) / 2));
+    grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,.95fr);
+    grid-template-rows:auto var(--row) var(--row) auto auto auto auto;
+    grid-template-areas:"tiles tiles tiles" "spec sky events" "cno bars drift" "ana ana ana" "fe fe fe" "const runs runs" "sats sats sats"}
+  #tilesCard{grid-area:tiles;padding:0;background:none;border:0}
+  #specCard{grid-area:spec} #skyCard{grid-area:sky} #eventsCard{grid-area:events}
+  #cnoCard{grid-area:cno} #barsCard{grid-area:bars} #driftCard{grid-area:drift}
+  #feCard{grid-area:fe} #anaCard{grid-area:ana} #constCard{grid-area:const} #runsCard{grid-area:runs} #satsCard{grid-area:sats}
+  .card{display:flex;flex-direction:column;padding:9px 12px;min-height:0}
+  .card h2{flex-wrap:nowrap;white-space:nowrap}
+  .card .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+  .legend{margin:2px 0 4px}
+  .chartwrap.fill{flex:1;height:auto;min-height:0}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+  .tile{padding:6px 10px}
+  .tile .v{font-size:19px}
+  .tile .s,.tile .k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .events{max-height:none;flex:1;min-height:0}
+  .smalls{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .warnline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px}
+  #specSub{display:none}
+  #pgaLine{white-space:normal;overflow:visible}
+  #specCard .legend{flex-wrap:nowrap;overflow:hidden;white-space:nowrap}
+  #wfWrap{height:56px!important}
+  .form{margin-top:4px} .form input{width:105px}
+  #specCard h2 .tools .btn, #specCard h2 .tools .seg button{padding:2px 7px;font-size:11.5px}
+  #specCard h2 .tools{gap:4px}
+}
+.card h2{font-size:13px;font-weight:650;margin:0 0 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card .sub{color:var(--ink-2);font-size:12px;margin:0 0 8px}
+.card h2 .tools{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.tile{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:8px 10px}
+.tile .k{font-size:11px;color:var(--ink-2);text-transform:uppercase;letter-spacing:.04em}
+.tile .v{font-size:22px;font-weight:600;line-height:1.2}
+.tile .s{font-size:12px;color:var(--ink-2)}
+.status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+.status i{font-style:normal;display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;
+  color:#fff;font-size:10px;line-height:1}
+.st-good i{background:var(--good)} .st-warn i{background:var(--warn);color:#000}
+.st-serious i{background:var(--serious);color:#000} .st-crit i{background:var(--crit)}
+.st-none i{background:var(--muted)}
+.runbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+@media (max-width:1199px){#runBar{flex:1 1 100%;order:5}}
+.runbar input[type=text]{flex:1 1 200px;min-width:0;border:1px solid var(--ring);background:var(--surface-2);
+  border-radius:8px;padding:6px 10px}
+.runlive{font-size:12px;color:var(--ink-2);white-space:nowrap}
+.rec{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--crit);margin-right:5px;
+  animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.25}}
+canvas{display:block;width:100%}
+.chartwrap{position:relative}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--ring);border-radius:8px;
+  padding:6px 8px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.15);white-space:nowrap;display:none;z-index:5}
+.tip .row{display:flex;gap:6px;align-items:center}
+.tip .sw{width:10px;height:3px;border-radius:2px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin:4px 0 6px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend .sw{width:12px;height:3px;border-radius:2px;display:inline-block}
+.legend .sw.dash{background:repeating-linear-gradient(90deg,var(--muted) 0 4px,transparent 4px 7px)!important}
+.legend .sw.dot{width:9px;height:9px;border-radius:50%}
+.smalls{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.smalls h3{font-size:12px;margin:0;color:var(--ink-2);font-weight:600}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--grid);white-space:nowrap}
+th{color:var(--ink-2);font-weight:600;position:sticky;top:0;background:var(--surface)}
+td.r,th.r{text-align:right}
+.tablewrap{overflow:auto;max-height:420px}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+.events{max-height:360px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.ev{display:grid;grid-template-columns:62px 18px 1fr;gap:6px;align-items:start;padding:4px 2px;border-bottom:1px solid var(--grid);font-size:12.5px}
+.ev .t{color:var(--muted);font-variant-numeric:tabular-nums}
+.ev .ic{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;color:#fff;margin-top:1px}
+.ev.alert .ic{background:var(--crit)} .ev.warn .ic{background:var(--warn);color:#000}
+.ev.good .ic{background:var(--good)} .ev.info .ic{background:var(--muted)} .ev.marker .ic{background:var(--marker)}
+.ev .run{color:var(--muted);font-size:11px}
+.seg{display:inline-flex;border:1px solid var(--ring);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--surface);padding:3px 9px;font-size:12px;cursor:pointer;border-right:1px solid var(--ring)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent);color:#fff}
+.note{font-size:12px;color:var(--ink-2);background:var(--surface-2);border-radius:8px;padding:8px 10px}
+.warnline{font-size:12px;margin-top:6px}
+.form{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.form input{border:1px solid var(--ring);background:var(--surface-2);border-radius:8px;padding:5px 8px;width:130px}
+.form input.short{width:64px}
+.delta-good{color:var(--good-ink)} .delta-bad{color:var(--crit)}
+.muted{color:var(--muted)}
+details summary{cursor:pointer;font-weight:650;font-size:13px}
+#rxBar{display:flex;gap:6px;padding:6px 16px;border-bottom:1px solid var(--ring);background:var(--page);overflow-x:auto}
+@media (min-width:1200px){#rxBar{padding:5px 14px}}
+#ovCmpCard .tablewrap{max-height:none}
+.rxtab{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ring);background:var(--surface);border-radius:999px;
+  padding:3px 11px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.rxtab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.rxtab .role{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;opacity:.8}
+.pill{display:inline-block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;border-radius:999px;padding:1px 7px;
+  border:1px solid var(--ring);color:var(--ink-2)}
+.pill.control{border-color:var(--good);color:var(--good-ink)} .pill.ignore{opacity:.6}
+#overviewView{padding:12px 16px 40px;display:grid;gap:12px;grid-template-columns:minmax(0,1fr)}
+@media (min-width:1000px){#overviewView{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} #ovCards,#ovCmpCard,#ovRunsCard{grid-column:1/-1}}
+@media (min-width:1400px){#overviewView{grid-template-columns:repeat(3,minmax(0,1fr))} #ovCards,#ovCmpCard,#ovRunsCard{grid-column:1/-1}}
+#ovCards{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.rxcard{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.rxcard h3{margin:0;font-size:13.5px;display:flex;gap:6px;align-items:center}
+.rxcard .spec{font-size:12px;color:var(--ink-2);min-height:16px}
+.rxcard .mini{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.rxcard .mini div{background:var(--surface-2);border-radius:8px;padding:4px 7px}
+.rxcard .mini .k{font-size:10.5px;color:var(--ink-2);text-transform:uppercase;letter-spacing:.03em}
+.rxcard .mini .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.rxcard .acts{display:flex;gap:6px;margin-top:2px}
+dialog#specDlg{border:1px solid var(--ring);border-radius:14px;background:var(--surface);color:var(--ink);padding:14px 16px;width:min(520px,calc(100vw - 32px))}
+dialog#specDlg::backdrop{background:rgba(0,0,0,.45)}
+.fgrid{display:grid;grid-template-columns:130px 1fr;gap:8px 10px;align-items:center;font-size:13px}
+.fgrid input,.fgrid select,.fgrid textarea{border:1px solid var(--ring);background:var(--surface-2);border-radius:8px;padding:6px 8px;width:100%}
+.fgrid .ro{color:var(--ink-2);font-size:12px}
+.cmp td small{display:block;color:var(--ink-2)}
+.cmp th.ctl{color:var(--good-ink)}
+dialog#wireDlg{border:1px solid var(--ring);border-radius:14px;background:var(--surface);color:var(--ink);padding:14px 16px;
+  width:min(1100px, calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
+dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
+.dlghead{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.dlghead h2{margin:0;font-size:15px}
+#wireSvg svg{display:block;width:100%;height:auto}
+.wirenotes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin-top:8px}
+.wirenotes .note b{color:var(--ink)}
+.cmd{display:flex;gap:8px;align-items:flex-start;margin:6px 0 12px}
+.cmd pre{flex:1;margin:0;background:var(--surface-2);border:1px solid var(--ring);border-radius:8px;padding:8px 10px;
+  font:12px ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+.cmdh{font-weight:650;font-size:13px;margin-top:6px}
+.w-board{fill:var(--surface-2);stroke:var(--axis);stroke-width:1.5}
+.w-pcb{fill:#1f6b3a} .w-gpsboard{fill:#26303d}
+.w-pin{fill:var(--surface);stroke:var(--axis)} .w-pin.on{stroke-width:2}
+.w-t{fill:var(--ink);font:12px system-ui,-apple-system,"Segoe UI",sans-serif}
+.w-t2{fill:var(--ink-2);font:11px system-ui,-apple-system,"Segoe UI",sans-serif}
+.w-tw{fill:#fff;font:600 12px system-ui,-apple-system,"Segoe UI",sans-serif}
+.w-tw2{fill:#e6e6e6;font:11px system-ui,-apple-system,"Segoe UI",sans-serif}
+.w-tb{fill:var(--ink);font:600 13px system-ui,-apple-system,"Segoe UI",sans-serif}
+.w-wire{fill:none;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+.w-pv{--c:#d03b3b} .w-gnd{--c:#3a3a38} .w-tx{--c:#eda100} .w-rx{--c:#1baf7a} .w-elrs{--c:#6250d6}
+:root[data-theme="dark"] .w-gnd{--c:#c3c2b7}
+@media (prefers-color-scheme: dark){:root:where(:not([data-theme="light"])) .w-gnd{--c:#c3c2b7}}
+.w-wire{stroke:var(--c)} .w-dotc{fill:var(--c)}
+.w-dash{stroke-dasharray:7 5}
+</style>
+</head>
+<body>
+<header>
+  <h1>GPS Scope <span id="verTag" class="muted" style="font-size:11px;font-weight:400" title="Server version / page version - they should match"></span></h1>
+  <div class="dev"><span class="dot" id="devDot"></span><span id="devTxt">connecting…</span></div>
+  <div class="runbar" id="runBar" title="Label each condition, record ~2 minutes, then change one thing and record again">
+    <input type="text" id="runLabel" list="presets" placeholder="Run label, e.g. RX bound · 100 mW · 1:2 telem · 3 cm">
+    <datalist id="presets"></datalist>
+    <button class="btn primary" id="runBtn">Start run</button>
+    <button class="btn" id="markBtn" title="Drop a note on every chart">Note</button>
+    <span class="seg" id="phaseSeg" title="Mark what you're doing NOW - the analysis splits the run at these marks. Press at the moment you switch, not after.">
+      <button data-p="Baseline">Baseline</button><button data-p="RX on">RX on</button><button data-p="RX off">RX off</button><button data-p="+" title="Custom phase name">+</button></span>
+    <span class="runlive" id="runLive"></span>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn sm" id="simBtn" style="display:none" title="Simulator only">Sim: RFI off</button>
+  <button class="btn sm" id="specBtn" title="Describe the GPS on this port">Spec</button>
+  <button class="btn sm" id="wireBtn" title="How to connect the GPS to the Pi">Wiring</button>
+  <button class="btn sm" id="cmdBtn" title="Copy-paste commands for updating and checking the Pi">Commands</button>
+  <button class="btn sm" id="themeBtn" title="Toggle theme">Theme</button>
+</header>
+
+<nav id="rxBar"></nav>
+
+<section id="overviewView" style="display:none">
+  <div id="ovCards"></div>
+  <section class="card"><h2>C/N0 (top 6) by receiver</h2><p class="sub">Common sky · differences between traces are installation effects.</p>
+    <div class="legend" id="ovLegend"></div><div class="chartwrap"><canvas id="ovCno" height="200"></canvas><div class="tip"></div></div></section>
+  <section class="card"><h2>PGA reduction by receiver</h2><p class="sub">dB, vs each receiver's own reference.</p>
+    <div class="legend ovLeg"></div><div class="chartwrap"><canvas id="ovGain" height="200"></canvas><div class="tip"></div></div></section>
+  <section class="card"><h2>Horizontal error by receiver</h2><p class="sub">m, re each receiver's run-baseline mean.</p>
+    <div class="legend ovLeg"></div><div class="chartwrap"><canvas id="ovMove" height="200"></canvas><div class="tip"></div></div></section>
+  <section class="card" id="ovCmpCard">
+    <h2>Cross-receiver comparison <span class="runlive" id="ovCmpWhich"></span>
+      <span class="tools"><button class="btn sm" id="ovCmpLive">Live run</button></span></h2>
+    <p class="sub" title="Each cell is that receiver's change from its own Baseline phase. 'vs control' subtracts the mean change of the control receiver(s) in the same phase, removing what the sky did.">Δ re each receiver's baseline phase · <b>ctrl-adj.</b> = Δ − Δcontrol (removes common-mode sky effects)</p>
+    <div class="tablewrap"><table id="ovCmpTbl" class="cmp"></table></div><div id="ovCmpNote" class="warnline"></div>
+  </section>
+  <section class="card" id="ovRunsCard"><h2>Runs <span class="tools"><button class="btn sm" id="ovRunsRefresh">Refresh</button></span></h2>
+    <div class="tablewrap"><table id="ovRunsTbl"></table></div></section>
+</section>
+
+<dialog id="specDlg">
+  <div class="dlghead"><h2>Receiver spec</h2><span class="runlive" id="specFor"></span></div>
+  <form method="dialog" class="fgrid" id="specForm">
+    <label>Name</label><input name="name" maxlength="60">
+    <label>Role</label><select name="role"><option value="test">Test (near the RFI source)</option><option value="control">Control (reference, away from source)</option><option value="ignore">Excluded from runs</option></select>
+    <label>Product</label><input name="product" placeholder="e.g. Matek M10Q-5883, BN-880, HGLRC M100 mini">
+    <label>Antenna</label><input name="antenna" placeholder="e.g. 25 mm patch, 18 mm patch, helical">
+    <label>Mounting</label><input name="location" placeholder="e.g. on mast above FC, under arm, taped to frame">
+    <label>Distance to RX, cm</label><input name="distance_cm" inputmode="decimal" placeholder="e.g. 3">
+    <label>Notes</label><textarea name="notes" rows="2" placeholder="shielding, cable length, firmware, anything"></textarea>
+    <label>Port</label><span class="ro" id="specPort"></span>
+    <label>Detected</label><span class="ro" id="specChip"></span>
+  </form>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+    <button class="btn" id="specCancel">Cancel</button><button class="btn primary" id="specSave">Save</button></div>
+</dialog>
+
+<dialog id="wireDlg">
+  <div class="dlghead">
+    <h2>Wiring</h2>
+    <span class="seg" id="wireMode"><button data-w="uart" class="on">Pi UART (GPIO)</button><button data-w="usb">USB-UART adapter</button><button data-w="multi">Multi-UART</button><button data-w="cmds">Commands</button></span>
+    <button class="btn sm" id="wireClose" style="margin-left:auto">Close</button>
+  </div>
+  <div id="wireStatus" class="warnline"></div>
+  <div id="wireSvg"></div>
+  <div class="wirenotes" id="wireNotes"></div>
+</dialog>
+
+<main>
+  <section class="card" id="tilesCard"><div class="tiles" id="tiles"></div></section>
+
+  <section class="card" id="specCard">
+    <h2>RF spectrum
+      <span class="tools">
+        <span class="seg" id="specMode"><button data-m="abs" class="on" title="Absolute spectrum, with the baseline drawn as a dashed line">Spectrum</button><button data-m="diff" title="Change from the baseline: the baseline becomes the flat 0 line, anything above it is louder than with the RX off">Δ baseline</button></span>
+        <button class="btn sm" id="corrBtn" title="Optional estimate: add back the gain the receiver removed (PGA reference − current PGA), assuming about 2 dB of spectrum per PGA dB. Off by default: the raw trace is exactly what the receiver reports. Unreliable once the PGA reaches its minimum.">PGA comp.</button>
+        <button class="btn sm" id="baseBtn" title="Freeze the current trace (and receiver gain) as the reference - do this with the ELRS RX off">Set baseline</button>
+        <button class="btn sm" id="baseClr" title="Clear baseline">Clear</button>
+        <button class="btn sm" id="maxBtn" title="Reset peak hold">Reset peak</button>
+        <button class="btn sm" id="smoothBtn" title="Show the median of the last 5 frames instead of a single frame - easier to see a raised floor. Spikes still show in 'Loudest' and the waterfall.">Median ×5</button>
+        <button class="btn sm on" id="wfBtn" title="Waterfall: spectrum over time, newest at the top. Each row is shown relative to its own median, so the receiver's gain changes don't hide anything. Moving bands = a dithering comb.">Waterfall</button>
+      </span>
+    </h2>
+    <p class="sub" id="specSub" title="UBX-MON-SPAN, 256 bins. Capture a baseline with the RX off. Δ baseline plots live − baseline median; peak hold is compared with the baseline peak. Waterfall: newest at top.">UBX-MON-SPAN · capture a baseline with the RX off · waterfall newest at top</p>
+    <div class="legend" id="specLegend"></div>
+    <div class="chartwrap fill" style="--h:300px"><canvas id="specCv" class="fill"></canvas><div class="tip"></div></div>
+    <div class="chartwrap" id="wfWrap" style="height:72px;margin-top:4px;flex:none"><canvas id="wfCv" class="fill"></canvas><div class="tip"></div></div>
+    <div class="warnline" id="pgaLine"></div>
+  </section>
+
+  <section class="card" id="skyCard">
+    <h2>Sky plot</h2>
+    <p class="sub" title="Dot size = C/N0. Hollow = tracked but not used in the fix. Red ring = dropped in the last 10 minutes.">Marker size = C/N0 · hollow = tracked, not used · red ring = dropped (10 min)</p>
+    <div class="legend" id="constLegend"></div>
+    <div class="chartwrap fill" style="--h:300px"><canvas id="skyCv" class="fill"></canvas><div class="tip"></div></div>
+  </section>
+
+  <section class="card" id="barsCard">
+    <h2>C/N0 per SV</h2>
+    <p class="sub" title="C/N0 (dB-Hz) per satellite, grouped by constellation. Solid = used in fix, outline = tracked only. Elevation shows under each bar when there's room, and on hover.">solid = used in navigation · outline = tracked only</p>
+    <div class="chartwrap fill" style="--h:210px"><canvas id="barCv" class="fill"></canvas><div class="tip"></div></div>
+  </section>
+
+  <section class="card" id="cnoCard">
+    <h2>C/N0 by constellation
+      <span class="tools"><span class="seg" id="winSeg">
+        <button data-w="120">2 m</button><button data-w="300" class="on">5 m</button><button data-w="900">15 m</button><button data-w="3600">60 m</button>
+      </span></span>
+    </h2>
+    <p class="sub" title="Mean of the strongest 4 satellites in each constellation. A simultaneous drop across every constellation points at RF interference, not sky geometry.">top-4 mean per constellation · a common-mode drop indicates RFI</p>
+    <div class="legend" id="cnoLegend"></div>
+    <div class="chartwrap fill" style="--h:240px"><canvas id="cnoCv" class="fill"></canvas><div class="tip"></div></div>
+  </section>
+
+  <section class="card" id="feCard">
+    <h2>RF front end</h2>
+    <p class="sub" title="Each measure on its own scale. When strong energy arrives in band the receiver reduces its gain (PGA, and AGC on M8) to avoid overload - that gain cut is the most reliable sign of a noisy receiver nearby.">All traces read up = more interference, except those marked post-PGA (measured after the gain stage, so they fall as RFI rises).</p>
+    <div class="smalls" id="smalls"></div>
+  </section>
+
+  <section class="card" id="driftCard">
+    <h2>Position error
+      <span class="tools">
+        <span id="driftBadge"></span>
+        <span class="seg" id="driftView"><button data-v="plot" class="on">Plot</button><button data-v="map">Map</button></span>
+      </span>
+    </h2>
+    <div class="chartwrap fill" id="driftWrap" style="--h:300px"><canvas id="driftCv" class="fill"></canvas><div class="tip"></div></div>
+    <div class="chartwrap fill" id="mapWrap" style="--h:300px;display:none"><div id="map"></div>
+      <div class="note" id="mapNote" style="display:none;position:absolute;left:8px;right:8px;bottom:8px;z-index:500">Map tiles need internet. The drift plot works offline.</div></div>
+    <div class="reflin"><span id="refTxt"></span> <button class="btn sm" id="refEdit">Change</button></div>
+    <div class="form" id="refForm">
+      <input id="refLat" placeholder="Latitude" inputmode="decimal">
+      <input id="refLon" placeholder="Longitude" inputmode="decimal">
+      <button class="btn sm" id="refSet">Set</button>
+      <button class="btn sm" id="refAvg" title="Usually not needed: ending the Baseline phase sets the reference automatically">Average 60 s</button>
+      <label class="muted" style="font-size:12px">Alert &gt; <input id="refThr" class="short" inputmode="decimal"> m</label>
+      <button class="btn sm" id="refClr">Clear</button>
+    </div>
+  </section>
+
+  <section class="card" id="eventsCard">
+    <h2>Event log
+      <span class="tools"><span class="seg" id="evSeg"><button data-f="all" class="on">All</button><button data-f="imp">Alerts</button></span></span>
+    </h2>
+    <div class="events" id="events"></div>
+  </section>
+
+  <section class="card" id="constCard">
+    <h2>Constellation summary</h2>
+    <div class="tablewrap"><table id="constTbl"></table></div>
+  </section>
+
+  <section class="card" id="anaCard">
+    <h2>Phase analysis <span id="anaWhich" class="runlive"></span>
+      <span class="tools"><button class="btn sm" id="anaLive" title="Show the run that is recording now">Live run</button></span></h2>
+    <p class="sub" title="Phases are the ones you marked - never guessed from the data. Values are medians with IQR and sample count; nothing is trimmed. 'Paired' compares each satellite only with itself, using satellites tracked in both phases.">split at operator phase marks · median (IQR on hover) · paired ΔC/N0 = per-SV · no trimming</p>
+    <div class="tablewrap"><table id="anaTbl"></table></div>
+    <div id="anaNotes" class="warnline"></div>
+  </section>
+
+  <section class="card" id="runsCard">
+    <h2>Runs <span class="tools"><a class="btn sm" href="/api/continuous.zip" title="Always-on per-second log and events, daily files, recorded even when no run is active">Continuous log (zip)</a><button class="btn sm" id="runsRefresh">Refresh</button></span></h2>
+    <p class="sub">Δ relative to the reference run (★).</p>
+    <div class="tablewrap"><table id="runsTbl"></table></div>
+  </section>
+
+  <section class="card" id="satsCard">
+    <details>
+      <summary>SV &amp; signal table</summary>
+      <div class="tablewrap" style="margin-top:8px"><table id="satTbl"></table></div>
+    </details>
+  </section>
+</main>
+
+<script src="/static/vendor/leaflet.js"></script>
+<script>
+"use strict";
+const PAGE_VERSION = "2026-10-18.3";
+/* ---------------- helpers ---------------- */
+const $ = s => document.querySelector(s);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const CONST = [ // fixed order = fixed colour slot
+  {name:"GPS", v:"--gps", p:"G"}, {name:"Galileo", v:"--gal", p:"E"}, {name:"BeiDou", v:"--bds", p:"B"},
+  {name:"GLONASS", v:"--glo", p:"R"}, {name:"SBAS", v:"--sbas", p:"S"}, {name:"QZSS", v:"--qzss", p:"Q"},
+  {name:"NavIC", v:"--navic", p:"N"}];
+const cColor = n => css((CONST.find(c=>c.name===n)||{v:"--muted"}).v);
+const fmt = (v,d=1) => v==null||isNaN(v) ? "–" : Number(v).toFixed(d);
+const hms = t => new Date(t*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"});
+const esc = s => String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let rxSel = (()=>{ try { return localStorage.getItem("gpsscope.rx") || "overview"; } catch(e){ return "overview"; } })();
+let rxList = [];
+const curRx = () => rxSel === "overview" ? (rxList[0] && rxList[0].id) : rxSel;
+const withRx = u => u + (u.includes("?") ? "&" : "?") + "rx=" + encodeURIComponent(curRx() || "");
+const post = (u,b={}) => fetch(withRx(u),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({rx: curRx()}, b))}).then(r=>r.json());
+const QUALITY = {0:"no signal",1:"searching",2:"acquired",3:"unusable",4:"code lock",5:"code+carrier",6:"code+carrier",7:"code+carrier"};
+
+function setupCanvas(cv){
+  const fill = cv.classList.contains("fill");
+  if (!fill && !cv.dataset.h) cv.dataset.h = cv.getAttribute("height");
+  const dpr = window.devicePixelRatio||1, w = cv.clientWidth, h = fill ? cv.clientHeight : +cv.dataset.h;
+  if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)){ cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr); if (!fill) cv.style.height = h+"px"; }
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
+  g.font = "11px system-ui,-apple-system,Segoe UI,sans-serif"; return {g,w,h};
+}
+function niceTicks(lo,hi,n=5){
+  const span = hi-lo || 1, step0 = span/n, mag = Math.pow(10,Math.floor(Math.log10(step0)));
+  const step = [1,2,2.5,5,10].map(m=>m*mag).find(s=>span/s<=n) || mag*10;
+  const out=[]; for(let v=Math.ceil(lo/step)*step; v<=hi+1e-9; v+=step) out.push(+v.toFixed(6)); return out;
+}
+function roundTop(g,x,y,w,h,r){ r=Math.min(r,w/2,Math.abs(h)); g.beginPath(); g.moveTo(x,y+h); g.lineTo(x,y+r);
+  g.quadraticCurveTo(x,y,x+r,y); g.lineTo(x+w-r,y); g.quadraticCurveTo(x+w,y,x+w,y+r); g.lineTo(x+w,y+h); g.closePath(); }
+
+/* tooltip plumbing: each chart registers a hit function */
+const hovers = new Map();
+function bindHover(cv, fn){
+  hovers.set(cv, fn);
+  const tip = cv.parentElement.querySelector(".tip");
+  const move = e => {
+    const r = cv.getBoundingClientRect(), p = e.touches ? e.touches[0] : e;
+    const x = p.clientX - r.left, y = p.clientY - r.top;
+    const res = fn(x,y);
+    cv._hx = res ? x : null; cv._hy = y;
+    if (!res){ tip.style.display="none"; redraw(cv); return; }
+    tip.innerHTML = res; tip.style.display="block";
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.min(Math.max(0, x+12), r.width - tw) + "px";
+    tip.style.top = Math.max(0, y - th - 10) + "px";
+    redraw(cv);
+  };
+  cv.addEventListener("mousemove", move); cv.addEventListener("touchstart", move, {passive:true});
+  cv.addEventListener("touchmove", move, {passive:true});
+  cv.addEventListener("mouseleave", ()=>{ tip.style.display="none"; cv._hx=null; redraw(cv); });
+}
+const redrawers = new Map(); const redraw = cv => { const f = redrawers.get(cv); f && f(); };
+
+/* ---------------- state ---------------- */
+let S = null, history = [], events = [], lastT = 0, lastEv = 0, win = 300, specMode = "abs", evFilter = "all";
+let runsCache = [], refRunId = localStorage.getItem("gpsscope.refRun") || null;
+const droppedKeys = new Map(); // sat -> t of last drop
+
+/* ---------------- tiles ---------------- */
+function statusBadge(level, label){
+  const map = {good:["st-good","✓"], warn:["st-warn","!"], serious:["st-serious","!"], crit:["st-crit","✕"], none:["st-none","–"]};
+  const [c,i] = map[level]||map.none; return `<span class="status ${c}"><i>${i}</i>${esc(label)}</span>`;
+}
+function gainLevel(g){
+  if (!g) return "none";
+  const v = g.gainCut!=null ? g.gainCut : g.agcDrop!=null ? g.agcDrop/3.3 : null;
+  return v==null ? "none" : v >= 6 ? "crit" : v >= 3 ? "serious" : v >= 1.5 ? "warn" : "good";
+}
+function gainTile(){
+  const g = S.gain||{};
+  if (g.gainCut!=null) return ["PGA reduction", (g.gainCut>0?"−":"")+g.gainCut+" <small>dB</small>",
+    `<span title="Receiver PGA gain ${g.pga} dB vs reference ${g.pgaRef} dB (${esc(g.refSrc||"")}). The receiver turns its gain down when strong in-band energy arrives - the most reliable sign of broadband interference such as a noisy receiver.">${statusBadge(gainLevel(g), `PGA ${g.pga} / ref ${g.pgaRef}`)}</span>`];
+  if (g.agcDrop!=null) return ["AGC reduction", "−"+fmt(g.agcDrop,1)+" <small>%</small>",
+    `<span title="AGC vs the highest seen in the last 10 minutes. A falling AGC means the receiver is reducing gain because more energy is arriving.">${statusBadge(gainLevel(g), `ref ${fmt(g.agcRef,0)} %`)}</span>`];
+  return ["PGA reduction", "–", "waiting for data"];
+}
+function renderTiles(){
+  const p = S.pvt||{}, rf = (S.rf||[])[0]||{}, h = history[history.length-1]||{};
+  const used = (S.sats||[]).filter(s=>s.used).length, tracked = (S.sats||[]).filter(s=>s.cno>0).length;
+  const fixLvl = p.fixType===3||p.fixType===4 ? "good" : p.fixType===2 ? "warn" : "crit";
+  const drift = p.err;
+  const driftLvl = drift==null ? "none" : (drift > S.driftThresh ? "crit" : drift > S.driftThresh*0.7 ? "warn" : "good");
+  const tiles = [
+    ["Fix", p.fix||"–", statusBadge(fixLvl, `${used} SVs used · ${tracked} tracked`)],
+    ["C/N0 (top 6)", fmt(h.cnoTop,1)+" <small>dB-Hz</small>", "mean of strongest 6 SVs"],
+    gainTile(),
+    ["AGC reduction", S.gain && S.gain.agcDrop!=null ? (S.gain.agcDrop>0?"−":"")+fmt(S.gain.agcDrop,0)+"<small>%</small>" : "–",
+      `<span title="AGC is measured after the gain stage: it FALLS when more energy arrives. Shown here as a drop from its reference, so bigger = louder input. Raw AGC ${rf.agcPct ?? "–"}%, noise ${rf.noise ?? "–"}/ms (also after the gain stage).">vs reference · post-PGA ⓘ</span>`],
+    ["CW jamming ind.", rf.jamInd ?? "–", `<span title="u-blox's narrowband (single-tone) jamming indicator, measured after the gain stage. Broadband noise makes the receiver cut its gain, so this number can FALL while interference gets worse. Receiver flag: ${esc(rf.jam||"–")}">narrowband · 0–255 ⓘ</span>`],
+    ["Antenna", rf.ant||"–", statusBadge(rf.antStatus===2?"good":rf.antStatus>=3?"crit":"none", rf.antStatus===2?"OK":"check")],
+    ["hAcc", (p.fixType>=2 && p.hAcc<1000) ? fmt(p.hAcc,2)+" <small>m</small>" : '<span class="muted">no fix</span>', `pDOP ${p.fixType>=2 ? fmt(p.pDOP,2) : "–"}`],
+    ["Position error", drift!=null ? fmt(drift,2)+" <small>m</small>" : "–", S.ref ? statusBadge(driftLvl, `limit ${S.driftThresh} m`) : "no reference set"],
+  ];
+  $("#tiles").innerHTML = tiles.map(([k,v,s])=>`<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+}
+
+/* ---------------- spectrum ---------------- */
+const specCv = $("#specCv");
+function drawSpectrum(){
+  const sp = S && S.spectrum, {g,w,h} = setupCanvas(specCv);
+  if (!sp){ g.fillStyle = css("--ink-2"); g.textAlign="center";
+    g.fillText(S && S.info.protver && S.info.protver < 27 ? "Spectrum needs a gen-9/10 receiver (M10, M9, F9). This M8 still reports jamming, AGC and noise below." : "Waiting for spectrum data…", w/2, h/2); return; }
+  const n = sp.db.length, f = i => sp.f0 + i*sp.df;
+  const diff = specMode==="diff" && sp.baseline;
+  const gref = S.gain && S.gain.pgaRef!=null ? S.gain.pgaRef : sp.pga;
+  const K = (S.info && S.info.pgaK) || 2;                        // spectrum dB per PGA dB
+  const corr = specCorr ? K*(gref - sp.pga) : 0;                  // add back the gain the receiver took away
+  const bcorr = specCorr && sp.baseline ? K*(gref - sp.baseline.pga) : 0;
+  if (sp.t !== specRingT){ specRingT = sp.t; specRing.unshift(sp.db.map(v=>v+corr)); if (specRing.length > 5) specRing.pop(); }
+  let cur = specSmooth && specRing.length >= 3 ? sp.db.map((_,i)=>{ const a = specRing.map(r=>r[i]).sort((x,y)=>x-y); return a[a.length>>1]; })
+                                               : sp.db.map(v=>v+corr);
+  let base = sp.baseline ? sp.baseline.db.map(v=>v+bcorr) : null, mx = sp.max.map(v=>v+corr);
+  let bmx = sp.baseline && sp.baseline.max ? sp.baseline.max.map(v=>v+bcorr) : null;   // baseline loudest
+  if (diff){ cur = cur.map((v,i)=>v - base[i]); mx = mx.map((v,i)=>v - (bmx ? bmx[i] : base[i])); }   // peaks vs peaks
+  const vals = diff ? cur.concat(mx) : cur.concat(mx, base||[], bmx||[]);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (diff){ const a = Math.max(6, Math.abs(lo), Math.abs(hi)); lo=-a; hi=a; } else { lo = Math.floor(lo-3); hi = Math.ceil(hi+3); }
+  const L=40,R=10,T=18,B=26, X = i => L + (i/(n-1))*(w-L-R), Y = v => T + (1-(v-lo)/(hi-lo))*(h-T-B);
+  // band shading
+  for (const m of sp.markers){
+    const i0 = (m.f - m.bw/2 - sp.f0)/sp.df, i1 = (m.f + m.bw/2 - sp.f0)/sp.df;
+    if (i1 < 0 || i0 > n-1) continue;
+    g.fillStyle = css("--surface-2"); g.fillRect(X(Math.max(0,i0)), T, Math.max(2, X(Math.min(n-1,i1))-X(Math.max(0,i0))), h-T-B);
+    g.fillStyle = css("--ink-2"); g.textAlign="center";
+    g.fillText(w < 640 ? m.short : m.name, X((i0+i1)/2), T-5);
+  }
+  // grid
+  g.strokeStyle = css("--grid"); g.lineWidth=1; g.fillStyle = css("--muted"); g.textAlign="right";
+  for (const t of niceTicks(lo,hi,5)){ g.beginPath(); g.moveTo(L,Y(t)+.5); g.lineTo(w-R,Y(t)+.5); g.stroke(); g.fillText(t, L-6, Y(t)+4); }
+  g.textAlign="center";
+  for (const fr of niceTicks(f(0), f(n-1), Math.max(3, Math.floor(w/90)))){ const i = (fr-sp.f0)/sp.df; g.fillText(fr, X(i), h-8); }
+  g.textAlign="left"; g.fillText((diff ? "Δ dB re baseline" : "dB (rel.)") + (specCorr && corr ? ` · +${corr} dB PGA comp.` : ""), L+4, T+12);
+  g.textAlign="right"; g.fillText("MHz", w-R, h-8);
+  if (diff){   // the baseline IS the 0 line in this view - draw and label it, shade "louder" above
+    g.fillStyle = css("--crit"); g.globalAlpha = .06; g.fillRect(L, T, w-L-R, Y(0)-T); g.globalAlpha = 1;
+    g.strokeStyle = css("--muted"); g.lineWidth = 2; g.setLineDash([6,4]); g.beginPath(); g.moveTo(L,Y(0)); g.lineTo(w-R,Y(0)); g.stroke(); g.setLineDash([]);
+    g.font = "600 11px system-ui,sans-serif"; g.fillStyle = css("--ink-2"); g.textAlign = "right";
+    g.fillText(`baseline = 0 dB`, w-R-4, Y(0)-5);
+    g.font = "11px system-ui,sans-serif"; g.fillStyle = css("--muted");
+    g.fillText("above baseline ↑", w-R-4, T+12); g.fillText("below ↓", w-R-4, h-B-6); }
+  const line = (arr,color,width,dash) => { g.strokeStyle=color; g.lineWidth=width; g.setLineDash(dash||[]); g.beginPath();
+    arr.forEach((v,i)=> i ? g.lineTo(X(i),Y(v)) : g.moveTo(X(i),Y(v))); g.stroke(); g.setLineDash([]); };
+  if (!diff && bmx) line(bmx, css("--muted"), 1, [1,3]);
+  if (!diff && base) line(base, css("--muted"), 1.5, [4,3]);
+  line(mx, css("--gal"), 1, []);
+  line(cur, css("--accent"), 2, []);
+  // crosshair
+  if (specCv._hx != null){ const i = Math.round((specCv._hx-L)/(w-L-R)*(n-1)); if (i>=0 && i<n){
+    g.strokeStyle = css("--axis"); g.beginPath(); g.moveTo(X(i)+.5,T); g.lineTo(X(i)+.5,h-B); g.stroke();
+    g.fillStyle=css("--accent"); g.strokeStyle=css("--surface"); g.lineWidth=2; g.beginPath(); g.arc(X(i),Y(cur[i]),4,0,7); g.fill(); g.stroke(); } }
+  $("#specLegend").innerHTML = `<span title="${diff?"This moment minus the baseline. Above 0 = louder than with the RX off.":"The spectrum right now"}"><i class="sw" style="background:${css("--accent")}"></i>${diff?"Δ live":"Live"}${specSmooth?" (median ×5)":""}</span>
+    <span title="The loudest each frequency has been since you pressed Max ↺${diff?", minus the baseline":""}. Always at or above the blue line."><i class="sw" style="background:${css("--gal")}"></i>${diff ? (bmx ? "Δ peak hold (vs baseline peak)" : "Δ peak hold") : "Peak hold " + esc(sp.maxLabel || "")}</span>
+    ${!diff && bmx ? `<span title="Loudest each frequency got during the baseline (${sp.baseline.frames||"?"} frames)"><i class="sw" style="background:repeating-linear-gradient(90deg,var(--muted) 0 2px,transparent 2px 5px)"></i>Baseline peak</span>` : ""}
+    ${!diff && base ? `<span><i class="sw dash"></i>Baseline median · ${esc(sp.baseline.label)} ${hms(sp.baseline.t)}</span>`:""}
+    ${sp.comb ? `<span>${statusBadge("crit", `comb · ${sp.comb} MHz pitch`)}</span>` : ""}
+    ${specCorr ? (S.gain && S.gain.pga != null && S.gain.pga <= 4 ? `<span>${statusBadge("warn", "PGA at minimum: compensation unreliable")}</span>` : `<span class="muted" title="Estimate only. The GPS lowers its own gain when interference arrives, which pulls the raw trace DOWN. Compensation adds that back (≈${(S.info&&S.info.pgaK)||2} dB per PGA dB).">PGA-compensated (estimate) ⓘ</span>`)
+      : (S.gain && S.gain.gainCut >= 2 ? `<span>${statusBadge("warn", `uncompensated: reads ${S.gain.gainCut * ((S.info&&S.info.pgaK)||2)} dB low (PGA −${S.gain.gainCut} dB)`)}</span>` : `<span class="muted">uncompensated (post-PGA)</span>`)}`;
+  specCv._geom = {L,R,n,w,cur,mx,base,bmx,f,diff};
+}
+bindHover(specCv, (x)=>{
+  const gm = specCv._geom; if (!gm) return null;
+  const i = Math.round((x-gm.L)/(gm.w-gm.L-gm.R)*(gm.n-1)); if (i<0||i>=gm.n) return null;
+  let s = `<b>${gm.f(i).toFixed(2)} MHz</b><div class="row"><i class="sw" style="background:${css("--accent")}"></i>${gm.diff?"Δ live":"Live"} ${gm.cur[i]} dB</div>
+    <div class="row"><i class="sw" style="background:${css("--gal")}"></i>Max ${gm.mx[i]} dB</div>`;
+  if (gm.base && !gm.diff) s += `<div class="row"><i class="sw" style="background:${css("--muted")}"></i>Baseline typical ${(+gm.base[i]).toFixed(1)} dB</div>`;
+  if (gm.bmx && !gm.diff) s += `<div class="row"><i class="sw" style="background:${css("--muted")}"></i>Baseline loudest ${(+gm.bmx[i]).toFixed(1)} dB</div>`;
+  return s;
+});
+redrawers.set(specCv, drawSpectrum);
+
+/* ---------------- waterfall ---------------- */
+const wfCv = $("#wfCv"), WF = []; let wfLastT = 0, wfOn = true;
+async function wfPrefill(){
+  try { const h = await fetch(withRx("/api/spectrum/history")).then(r=>r.json());
+    for (const fr of h.frames){ const med = fr.db.slice().sort((a,b)=>a-b)[fr.db.length>>1];
+      WF.unshift({t: fr.t, v: fr.db.map(x=>x-med), f0: h.f0, df: h.df}); }
+    if (WF.length > 180) WF.length = 180; if (WF.length) wfLastT = WF[0].t; drawWaterfall(); } catch(e){}
+}
+function wfPush(){
+  const sp = S && S.spectrum; if (!sp || sp.t === wfLastT) return; wfLastT = sp.t;
+  const med = sp.db.slice().sort((a,b)=>a-b)[sp.db.length>>1];
+  WF.unshift({t: sp.t, v: sp.db.map(x=>x-med), f0: sp.f0, df: sp.df}); if (WF.length > 180) WF.pop();
+}
+function wfColor(x){ // sequential: surface -> blue -> deep, 0..30 dB above row median
+  const dark = getComputedStyle(document.documentElement).colorScheme === "dark";
+  const u = Math.max(0, Math.min(1, x/30));
+  const a = dark ? [26,26,25] : [252,252,251], m = dark ? [57,135,229] : [42,120,214], z = dark ? [205,226,251] : [13,54,107];
+  const lerp = (p,q,k)=>p.map((c,i)=>Math.round(c+(q[i]-c)*k));
+  return u < .5 ? lerp(a,m,u*2) : lerp(m,z,(u-.5)*2);
+}
+function drawWaterfall(){
+  $("#wfWrap").style.display = wfOn && S && S.spectrum ? "" : "none";
+  if (!wfOn || !WF.length) return;
+  const {g,w,h} = setupCanvas(wfCv), L=40, R=10, n = WF[0].v.length, rows = Math.min(WF.length, h);
+  const img = g.createImageData(Math.max(1,Math.round(w-L-R)), rows);
+  for (let r=0;r<rows;r++){ const row = WF[r].v;
+    for (let x=0;x<img.width;x++){ const c = wfColor(row[Math.floor(x/img.width*n)]); const o=(r*img.width+x)*4;
+      img.data[o]=c[0]; img.data[o+1]=c[1]; img.data[o+2]=c[2]; img.data[o+3]=255; } }
+  const tmp = document.createElement("canvas"); tmp.width = img.width; tmp.height = rows; tmp.getContext("2d").putImageData(img,0,0);
+  g.imageSmoothingEnabled = false; const rh = h/Math.max(rows,30); g.drawImage(tmp, L, 0, w-L-R, rows*rh);
+  g.fillStyle = css("--muted"); g.textAlign="right"; g.fillText("now", L-6, 10); g.fillText(`−${Math.round(WF[0].t-WF[rows-1].t)} s`, L-6, Math.max(20, rows*rh)-2);
+  wfCv._geom = {L,R,w,n,rowsH: rh};
+}
+bindHover(wfCv,(x,y)=>{ const gm = wfCv._geom; if(!gm || x<gm.L || x>gm.w-gm.R) return null;
+  const r = Math.floor(y/Math.max(1,gm.rowsH)), row = WF[r]; if(!row) return null; const i = Math.floor((x-gm.L)/(gm.w-gm.L-gm.R)*gm.n);
+  return `<b>${(row.f0+i*row.df).toFixed(2)} MHz</b><br>${row.v[i]>=0?"+":""}${row.v[i]} dB vs row median<br>${hms(row.t)}`; });
+redrawers.set(wfCv, drawWaterfall);
+$("#wfBtn").onclick = () => { wfOn = !wfOn; $("#wfBtn").classList.toggle("on", wfOn); drawWaterfall(); };
+
+function renderPga(){
+  const sp = S.spectrum, el = $("#pgaLine");
+  if (!sp){ el.innerHTML=""; return; }
+  const g = S.gain||{}, cut = g.gainCut||0;
+  let peak = "";
+  if (sp.baseline && sp.baseline.max){ const K = (S.info && S.info.pgaK) || 2, gref = g.pgaRef!=null ? g.pgaRef : sp.pga;
+    const c = specCorr ? K*(gref - sp.pga) : 0, bc = specCorr ? K*(gref - sp.baseline.pga) : 0;
+    const d = sp.max.map((v,i)=> (v + c) - (sp.baseline.max[i] + bc)).sort((a,b)=>a-b);
+    const med = d[d.length>>1], top = d[d.length-1];
+    peak = ` · peak hold re baseline peak: median <b>${med>0?"+":""}${med.toFixed(0)} dB</b>, max <b>${top>0?"+":""}${top.toFixed(0)} dB</b>`; }
+  let s = `PGA <b>${sp.pga} dB</b> · ref ${g.pgaRef ?? "–"} dB (${esc(g.refSrc||"")})`;
+  if (cut >= 2){
+    s += ` · ${statusBadge(gainLevel(g), `PGA −${cut} dB`)} ` + (specCorr ? "compensated" : "uncompensated");
+    el.title = "The receiver's AGC turned the gain down because strong energy is arriving in band. A raw trace drops by that amount and hides the problem; 'Gain-corrected' adds it back.";
+  } else { s += ` · ${(sp.span/1e6).toFixed(0)} MHz span · ${(sp.res/1e3).toFixed(0)} kHz RBW`; el.title = ""; }
+  el.innerHTML = s + peak;
+}
+
+/* ---------------- sky plot ---------------- */
+const skyCv = $("#skyCv");
+function drawSky(){
+  const {g,w,h} = setupCanvas(skyCv); if (!S) return;
+  const cx = w/2, cy = h/2, R = Math.min(w,h)/2 - 18;
+  g.strokeStyle = css("--grid"); g.lineWidth=1; g.fillStyle=css("--muted"); g.textAlign="center";
+  for (const e of [0,30,60]){ const r = R*(1-e/90); g.beginPath(); g.arc(cx,cy,r,0,7); g.stroke(); g.fillText(e+"°", cx+3, cy-r+12); }
+  for (let a=0;a<360;a+=45){ const t=(a-90)*Math.PI/180; g.beginPath(); g.moveTo(cx,cy); g.lineTo(cx+R*Math.cos(t),cy+R*Math.sin(t)); g.stroke(); }
+  g.fillStyle = css("--ink-2"); [["N",0],["E",90],["S",180],["W",270]].forEach(([l,a])=>{ const t=(a-90)*Math.PI/180; g.fillText(l, cx+(R+10)*Math.cos(t), cy+(R+10)*Math.sin(t)+4); });
+  const pts = [];
+  for (const s of S.sats){
+    if (s.elev < 0 || (s.elev===0 && s.azim===0)) continue;
+    const r = R*(1-s.elev/90), t = (s.azim-90)*Math.PI/180, x = cx + r*Math.cos(t), y = cy + r*Math.sin(t);
+    const rad = s.cno>0 ? 4 + Math.max(0,s.cno-15)/3.5 : 3.5, col = cColor(s.gnss);
+    g.lineWidth = 2;
+    if (droppedKeys.has(s.key) && Date.now()/1000 - droppedKeys.get(s.key) < 600){ g.strokeStyle=css("--crit"); g.beginPath(); g.arc(x,y,rad+4,0,7); g.stroke(); }
+    g.beginPath(); g.arc(x,y,rad,0,7);
+    if (s.used){ g.fillStyle=col; g.fill(); g.strokeStyle=css("--surface"); g.stroke(); }
+    else { g.strokeStyle = s.cno>0 ? col : css("--muted"); g.stroke(); }
+    g.fillStyle = css("--ink-2"); g.font="10px system-ui,sans-serif"; g.fillText(s.key, x, y - rad - 3);
+    pts.push({x,y,rad,s});
+  }
+  skyCv._pts = pts;
+}
+bindHover(skyCv,(x,y)=>{
+  const p = (skyCv._pts||[]).find(p=>Math.hypot(p.x-x,p.y-y) < Math.max(p.rad+6, 12)); if(!p) return null; const s=p.s;
+  return `<b>${s.key}</b> ${s.gnss}<br>C/N0 ${s.cno} dB-Hz<br>elev ${s.elev}° · az ${s.azim}°<br>${s.used?"used in fix":"not used"} · ${QUALITY[s.quality]||s.quality}`;
+});
+redrawers.set(skyCv, drawSky);
+
+/* ---------------- per-sat bars ---------------- */
+const barCv = $("#barCv");
+function drawBars(){
+  const {g,w,h} = setupCanvas(barCv); if (!S) return;
+  const sats = S.sats.filter(s=>s.cno>0 || s.elev>0);
+  const order = CONST.map(c=>c.name);
+  sats.sort((a,b)=> order.indexOf(a.gnss)-order.indexOf(b.gnss) || a.sv-b.sv);
+  const L=30,R=6,T=10,B=34, groups = [...new Set(sats.map(s=>s.gnss))];
+  const gap = 10, slots = sats.length + (groups.length-1)*gap/14, bw = Math.max(4, Math.min(22, (w-L-R)/Math.max(1,slots) - 2));
+  const Y = v => T + (1 - v/55)*(h-T-B);
+  g.strokeStyle=css("--grid"); g.fillStyle=css("--muted"); g.textAlign="right";
+  for (const t of [0,10,20,30,40,50]){ g.beginPath(); g.moveTo(L,Y(t)+.5); g.lineTo(w-R,Y(t)+.5); g.stroke(); g.fillText(t,L-5,Y(t)+4); }
+  let x = L+4, prev=null; const rects=[];
+  for (const s of sats){
+    if (prev && prev!==s.gnss) x += gap;
+    const col = cColor(s.gnss), y = Y(s.cno);
+    if (s.cno>0){
+      roundTop(g,x,y,bw,Y(0)-y,4);
+      if (s.used){ g.fillStyle=col; g.fill(); } else { g.strokeStyle=col; g.lineWidth=1.5; g.stroke(); }
+    }
+    g.save(); g.translate(x+bw/2, h-B+6); g.rotate(-Math.PI/2); g.textAlign="right"; g.fillStyle=css("--ink-2"); g.font="9.5px system-ui,sans-serif";
+    g.fillText(s.key,0,3); g.restore();
+    if (bw >= 13){ g.fillStyle=css("--muted"); g.textAlign="center"; g.font="9px system-ui,sans-serif"; g.fillText(s.elev+"°", x+bw/2, h-3); }
+    rects.push({x,w:bw,s}); x += bw + 2; prev = s.gnss;
+  }
+  g.font="11px system-ui,sans-serif"; g.strokeStyle=css("--axis"); g.beginPath(); g.moveTo(L,Y(0)+.5); g.lineTo(w-R,Y(0)+.5); g.stroke();
+  barCv._rects = rects;
+}
+bindHover(barCv,(x)=>{ const r=(barCv._rects||[]).find(r=>x>=r.x-1&&x<=r.x+r.w+1); if(!r) return null; const s=r.s;
+  return `<b>${s.key}</b> ${s.gnss}<br>C/N0 ${s.cno} dB-Hz · elev ${s.elev}°<br>${s.used?"used":"not used"} · ${QUALITY[s.quality]||""}`; });
+redrawers.set(barCv, drawBars);
+
+/* ---------------- timeline charts (one measure per chart) ---------------- */
+function drawTimeline(cv, opts){
+  const {g,w,h} = setupCanvas(cv);
+  const t1 = (history.length ? history[history.length-1].t : Date.now()/1000), t0 = t1 - win;
+  const L=36,R=opts.labelRight?62:10,T=8,B=20;
+  const X = t => L + (t-t0)/(t1-t0)*(w-L-R);
+  let vals = []; for (const s of opts.series) for (const [t,v] of s.pts) if (t>=t0 && v!=null) vals.push(v);
+  let lo = opts.min ?? (vals.length?Math.min(...vals):0), hi = opts.max ?? (vals.length?Math.max(...vals):1);
+  if (opts.min==null) lo = Math.floor(lo - (hi-lo)*0.1 - 1); if (opts.max==null) hi = Math.ceil(hi + (hi-lo)*0.1 + 1);
+  if (opts.floor!=null) lo = Math.max(opts.floor, lo);
+  const Y = v => T + (1-(v-lo)/(hi-lo))*(h-T-B);
+  // run spans
+  for (const r of runSpans()){ const a=Math.max(t0,r.start), b=Math.min(t1,r.end); if (b<=a) continue;
+    g.fillStyle=css("--surface-2"); g.fillRect(X(a),T,X(b)-X(a),h-T-B); }
+  g.strokeStyle=css("--grid"); g.lineWidth=1; g.fillStyle=css("--muted"); g.textAlign="right";
+  for (const t of niceTicks(lo,hi,4)){ g.beginPath(); g.moveTo(L,Y(t)+.5); g.lineTo(w-R,Y(t)+.5); g.stroke(); g.fillText(t,L-5,Y(t)+4); }
+  g.textAlign="center"; const pxPerS = (w-L-R)/win;
+  const step = [30,60,120,300,600,900,1800].find(s=>s*pxPerS >= 56) || 3600;
+  for (let t=Math.ceil(t0/step)*step; t<=t1; t+=step) g.fillText(new Date(t*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",hourCycle:"h23"}), X(t), h-5);
+  if (opts.threshold!=null && opts.threshold>=lo && opts.threshold<=hi){ g.strokeStyle=css("--crit"); g.setLineDash([4,3]); g.beginPath(); g.moveTo(L,Y(opts.threshold)); g.lineTo(w-R,Y(opts.threshold)); g.stroke(); g.setLineDash([]); }
+  // phase boundaries, labelled
+  for (const e of events){ if (e.kind!=="phase" || e.t<t0) continue;
+    g.strokeStyle=css("--ink-2"); g.lineWidth=1; g.beginPath(); g.moveTo(X(e.t)+.5,T); g.lineTo(X(e.t)+.5,h-B); g.stroke();
+    if (h > 150){ g.fillStyle=css("--ink-2"); g.textAlign="left"; g.fillText(e.msg, X(e.t)+3, T+10); } }
+  // event ticks
+  for (const e of events){ if (e.t<t0 || e.kind==="phase" || !(e.severity==="alert"||e.severity==="marker")) continue;
+    g.strokeStyle = e.severity==="marker" ? css("--marker") : css("--crit"); g.globalAlpha=.6; g.beginPath(); g.moveTo(X(e.t)+.5,T); g.lineTo(X(e.t)+.5,h-B); g.stroke(); g.globalAlpha=1; }
+  for (const s of opts.series){
+    g.strokeStyle=s.color; g.lineWidth=2; g.setLineDash(s.dash||[]); g.beginPath(); let pen=false, prevT=null, last=null;
+    for (const [t,v] of s.pts){ if (t<t0) continue; if (v==null || (prevT && (t-prevT>5 || t<prevT))){ pen=false; } if (v==null){prevT=t; continue;}
+      pen ? g.lineTo(X(t),Y(v)) : g.moveTo(X(t),Y(v)); pen=true; prevT=t; last=[t,v]; }
+    g.stroke(); g.setLineDash([]);
+    if (opts.labelRight && last){ s._ly = Y(last[1]); }
+  }
+  if (opts.labelRight){ // direct labels with simple collision avoidance
+    const labs = opts.series.filter(s=>s._ly!=null).sort((a,b)=>a._ly-b._ly);
+    for (let i=1;i<labs.length;i++) if (labs[i]._ly - labs[i-1]._ly < 12) labs[i]._ly = labs[i-1]._ly + 12;
+    g.textAlign="left"; for (const s of labs){ g.fillStyle=css("--ink-2"); g.fillText(s.name, w-R+6, s._ly+4); }
+  }
+  if (cv._hx!=null && cv._hx>=L && cv._hx<=w-R){ g.strokeStyle=css("--axis"); g.beginPath(); g.moveTo(cv._hx+.5,T); g.lineTo(cv._hx+.5,h-B); g.stroke(); }
+  cv._geom = {L,R,w,t0,t1,opts};
+}
+function timelineHover(cv){
+  bindHover(cv,(x)=>{
+    const gm = cv._geom; if(!gm || x<gm.L || x>gm.w-gm.R) return null;
+    const t = gm.t0 + (x-gm.L)/(gm.w-gm.L-gm.R)*(gm.t1-gm.t0);
+    let rows = `<b>${hms(t)}</b>`;
+    for (const s of gm.opts.series){ let best=null; for (const p of s.pts){ if (!best || Math.abs(p[0]-t) < Math.abs(best[0]-t)) best=p; }
+      if (best && Math.abs(best[0]-t)<4) rows += `<div class="row"><i class="sw" style="background:${s.color}"></i>${esc(s.name)} ${fmt(best[1], gm.opts.dec??1)} ${gm.opts.unit||""}</div>`; }
+    const ev = events.filter(e=>Math.abs(e.t-t)<3 && e.severity!=="info").slice(-2);
+    for (const e of ev) rows += `<div style="max-width:260px;white-space:normal;margin-top:3px">${esc(e.msg)}</div>`;
+    return rows;
+  });
+}
+function runSpans(){
+  const spans=[]; let open=null;
+  for (const e of events){ if (e.kind!=="run") continue;
+    if (e.msg.startsWith("Run started")) open = {start:e.t, label:e.msg.slice(13)};
+    else if (open){ open.end=e.t; spans.push(open); open=null; } }
+  if (open){ open.end = Date.now()/1000; spans.push(open); } return spans;
+}
+
+const cnoCv = $("#cnoCv"); timelineHover(cnoCv);
+function drawCno(){
+  const present = CONST.filter(c => history.some(hh => hh.cnoBy && hh.cnoBy[c.name]!=null));
+  const series = present.map(c => ({name:c.name, color:css(c.v), pts:history.map(hh=>[hh.t, hh.cnoBy ? hh.cnoBy[c.name] : null])}));
+  drawTimeline(cnoCv, {series, unit:"dB-Hz", labelRight:true, floor:0});
+  $("#cnoLegend").innerHTML = present.map(c=>`<span><i class="sw" style="background:${css(c.v)}"></i>${c.name}</span>`).join("") +
+    `<span><i class="sw" style="background:${css("--crit")};height:10px;width:2px"></i>alert</span><span><i class="sw" style="background:${css("--marker")};height:10px;width:2px"></i>marker</span>`;
+}
+redrawers.set(cnoCv, drawCno);
+
+const SMALLS = [
+  {k:"gainCut", name:"PGA reduction", unit:"dB", min:0, dec:0, sub:"vs reference · alert at 3 dB", needSpec:true, thrV:3},
+  {k:"agcDrop", name:"AGC reduction", unit:"%", min:0, dec:1, sub:"vs reference (M8 equivalent of PGA reduction)"},
+  {k:"noise", name:"Noise level (post-PGA)", unit:"/ms", dec:0, sub:"falls when PGA is reduced"},
+  {k:"specL1c", name:"L1 in-band power", unit:"dB", dec:1, sub:"1574–1577 MHz · PGA-compensated", needSpec:true},
+  {k:"jamInd", name:"CW jamming ind. (post-PGA)", unit:"", min:0, dec:0, sub:"narrowband only · falls under wideband RFI"},
+  {k:"used", name:"SVs used", unit:"", min:0, dec:0, sub:"in the navigation solution"},
+  {k:"hAcc", name:"hAcc", unit:"m", min:0, dec:2, sub:"receiver accuracy estimate"},
+  {k:"posErr", name:"Position error", unit:"m", min:0, dec:2, sub:"vs surveyed reference", thr:true},
+  {k:"runErr", name:"Horizontal error vs hAcc", unit:"m", min:0, dec:2, sub:"error re run-baseline mean (solid) · hAcc (dashed)", pair:"hAcc"},
+  {k:"spikes", name:"Spurs per sweep", unit:"", min:0, dec:0, sub:"peaks ≥20 dB above local floor", needSpec:true},
+];
+function buildSmalls(){
+  $("#smalls").innerHTML = SMALLS.map(s=>`<div data-k="${s.k}"><h3>${s.name} <span class="muted" style="font-weight:400">${s.sub}</span></h3>
+    <div class="chartwrap"><canvas height="120"></canvas><div class="tip"></div></div></div>`).join("");
+  for (const s of SMALLS){ const cv = $(`#smalls [data-k="${s.k}"] canvas`); s.cv = cv; timelineHover(cv); redrawers.set(cv, ()=>drawSmall(s)); }
+}
+function drawSmall(s){
+  const box = s.cv.parentElement.parentElement;
+  const has = history.some(h=>h[s.k]!=null);
+  box.style.display = (s.needSpec && !(S && S.info.spectrum)) || (s.noSpec && S && S.info.spectrum) || (s.k==="posErr" && !has && !(S&&S.ref)) ? "none" : "";
+  const ser = [{name: s.pair ? "Error" : s.name, color:css("--accent"), pts:history.map(h=>[h.t,h[s.k]])}];
+  if (s.pair) ser.push({name:"hAcc", color:css("--muted"), dash:[4,3], pts:history.map(h=>[h.t,h[s.pair]])});
+  drawTimeline(s.cv, {series:ser, unit:s.unit, dec:s.dec,
+    min:s.min, threshold: s.thr && S ? S.driftThresh : (s.thrV ?? null)});
+}
+
+/* ---------------- drift ---------------- */
+const driftCv = $("#driftCv");
+function drawDrift(){
+  const {g,w,h} = setupCanvas(driftCv); if (!S) return;
+  const cx=w/2, cy=h/2;
+  if (!S.ref){ g.fillStyle=css("--ink-2"); g.textAlign="center"; g.fillText("No reference position set", cx, cy); return; }
+  const trail = S.trail||[], maxE = Math.max(S.driftThresh*1.4, 2, ...trail.map(p=>Math.hypot(p[1],p[2])*1.15));
+  const rings = [0.5,1,2,5,10,20,50,100].filter(r=>r<=maxE*1.05); const R = Math.min(w,h)/2 - 14, k = R/maxE;
+  g.strokeStyle=css("--grid"); g.lineWidth=1; g.fillStyle=css("--muted"); g.textAlign="left";
+  for (const r of rings){ g.beginPath(); g.arc(cx,cy,r*k,0,7); g.stroke(); g.fillText(r+" m", cx+r*k*0.71+3, cy-r*k*0.71-2); }
+  g.beginPath(); g.moveTo(cx-R,cy); g.lineTo(cx+R,cy); g.moveTo(cx,cy-R); g.lineTo(cx,cy+R); g.stroke();
+  g.fillStyle=css("--ink-2"); g.textAlign="center"; g.fillText("N", cx, cy-R-2); g.fillText("E", cx+R+8, cy+4);
+  // threshold
+  g.strokeStyle=css("--crit"); g.setLineDash([5,4]); g.lineWidth=1.5; g.beginPath(); g.arc(cx,cy,S.driftThresh*k,0,7); g.stroke(); g.setLineDash([]);
+  // trail, fading
+  const n = trail.length;
+  for (let i=1;i<n;i++){ g.strokeStyle=css("--accent"); g.globalAlpha = 0.15 + 0.85*(i/n); g.lineWidth=1.5; g.beginPath();
+    g.moveTo(cx+trail[i-1][1]*k, cy-trail[i-1][2]*k); g.lineTo(cx+trail[i][1]*k, cy-trail[i][2]*k); g.stroke(); }
+  g.globalAlpha=1;
+  // reference cross
+  g.strokeStyle=css("--ink"); g.lineWidth=2; g.beginPath(); g.moveTo(cx-6,cy); g.lineTo(cx+6,cy); g.moveTo(cx,cy-6); g.lineTo(cx,cy+6); g.stroke();
+  const p = S.pvt;
+  if (p && p.dE!=null){ const x=cx+p.dE*k, y=cy-p.dN*k;
+    g.strokeStyle=css("--accent"); g.globalAlpha=.25; g.lineWidth=1; g.beginPath(); g.arc(x,y,Math.max(2,p.hAcc*k),0,7); g.stroke(); g.globalAlpha=1;
+    g.fillStyle = p.drifting ? css("--crit") : css("--accent"); g.strokeStyle=css("--surface"); g.lineWidth=2; g.beginPath(); g.arc(x,y,6,0,7); g.fill(); g.stroke();
+    g.fillStyle=css("--ink"); g.textAlign="left"; g.font="600 12px system-ui,sans-serif";
+    g.fillText(`${fmt(p.err,2)} m`, 8, 16); g.font="11px system-ui,sans-serif"; g.fillStyle=css("--ink-2");
+    g.fillText(`E ${fmt(p.dE,2)}  N ${fmt(p.dN,2)}${p.dU!=null?`  U ${fmt(p.dU,2)}`:""} m`, 8, 31);
+    g.fillText(`faint circle = receiver's hAcc (${fmt(p.hAcc,2)} m)`, 8, h-6);
+  }
+  driftCv._k = {cx,cy,k};
+}
+bindHover(driftCv,(x,y)=>{ const d=driftCv._k; if(!d) return null; const e=(x-d.cx)/d.k, n=(d.cy-y)/d.k;
+  return `E ${e.toFixed(2)} m · N ${n.toFixed(2)} m<br>${Math.hypot(e,n).toFixed(2)} m from reference`; });
+redrawers.set(driftCv, drawDrift);
+
+$("#driftView").onclick = e => { const b=e.target.closest("button"); if(!b) return;
+  [...$("#driftView").children].forEach(x=>x.classList.toggle("on",x===b));
+  const m = b.dataset.v==="map"; $("#driftWrap").style.display = m?"none":""; $("#mapWrap").style.display = m?"":"none";
+  if (m && map){ map.invalidateSize(); updateMap(); } else drawDrift(); };
+/* map (optional, needs Leaflet + internet for tiles) */
+let map=null, refMk=null, posMk=null, thrCircle=null, mapCentered=false;
+function initMap(retry){
+  if (!window.L && !retry){ // not vendored: try the CDN (works when the phone has internet)
+    const sc = document.createElement("script"); sc.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    sc.onload = () => { initMap(true); updateMap(); }; sc.onerror = () => initMap(true); document.head.appendChild(sc); return; }
+  if (!window.L){ $("#mapNote").style.display="block"; $("#mapNote").textContent="Map library not installed (run install.sh with internet). The drift plot works without it."; return; }
+  map = L.map("map",{zoomControl:true}).setView([51.5,-0.12], 3);
+  const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,maxNativeZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+  tiles.on("tileerror", ()=>{ $("#mapNote").style.display="block"; });
+  // Reference is set automatically from the Baseline phase; tapping the map no longer moves it.
+}
+function updateMap(){
+  if (!map || !S) return; const p = S.pvt||{};
+  if (p.lat && p.fixType>=2){
+    const ll=[p.lat,p.lon];
+    if (!posMk) posMk = L.circleMarker(ll,{radius:6,color:css("--surface"),weight:2,fillColor:css("--accent"),fillOpacity:1}).addTo(map);
+    posMk.setLatLng(ll).setStyle({fillColor: p.drifting?css("--crit"):css("--accent")});
+    if (!mapCentered){ map.setView(ll, 19); mapCentered=true; }
+  }
+  if (S.ref){
+    const ll=[S.ref.lat,S.ref.lon];
+    if (!refMk){ refMk = L.marker(ll).addTo(map).bindTooltip("Reference"); thrCircle = L.circle(ll,{radius:S.driftThresh,color:css("--crit"),weight:1.5,dashArray:"5 4",fill:false}).addTo(map); }
+    refMk.setLatLng(ll); thrCircle.setLatLng(ll).setRadius(S.driftThresh);
+  } else if (refMk){ map.removeLayer(refMk); map.removeLayer(thrCircle); refMk=thrCircle=null; }
+}
+async function setRef(b){
+  const r = await post("/api/ref", Object.assign({thresh: parseFloat($("#refThr").value)||undefined}, b));
+  if (!r.ok) alert(r.error||"failed"); else { refEditing = false; poll(true); }
+}
+let refEditing = false;
+$("#refEdit").onclick = () => { refEditing = true; renderRef(); drawAll(); };
+$("#refSet").onclick = ()=> setRef({lat:$("#refLat").value, lon:$("#refLon").value, source:"entered"});
+$("#refAvg").onclick = ()=> setRef({mode:"average", seconds:60});
+$("#refClr").onclick = ()=> post("/api/ref",{clear:true}).then(()=>poll(true));
+$("#refThr").onchange = e => post("/api/ref/thresh",{thresh:parseFloat(e.target.value)||3}).then(()=>poll(true));
+function renderRef(){
+  const r=S.ref, p=S.pvt||{};
+  if (document.activeElement !== $("#refThr")) $("#refThr").value = S.driftThresh;
+  $("#refTxt").innerHTML = r ? `Ref ${r.lat.toFixed(7)}, ${r.lon.toFixed(7)} · ${esc(r.source)} · alert &gt; ${S.driftThresh} m`
+    : "No reference yet. It is set automatically when the Baseline phase ends (average of its fixes).";
+  $("#refTxt").title = r ? "" : "You can still enter surveyed coordinates or average the last 60 s by hand.";
+  $("#refForm").style.display = (!r || refEditing) ? "" : "none";
+  $("#refEdit").style.display = r && !refEditing ? "" : "none";
+  $("#driftBadge").outerHTML = `<span id="driftBadge">${ !r ? statusBadge("none","no reference") : p.err==null ? statusBadge("none","no fix") :
+    p.drifting ? statusBadge("crit",`drifting ${fmt(p.err,1)} m`) : statusBadge("good",`within ${S.driftThresh} m`)}</span>`;
+}
+
+/* ---------------- events ---------------- */
+const EVICON = {alert:"✕", warn:"!", good:"✓", info:"i", marker:"◆"};
+function renderEvents(){
+  const list = events.filter(e => evFilter==="all" || e.severity!=="info").slice(-250).reverse();
+  $("#events").innerHTML = list.map(e=>`<div class="ev ${e.severity}"><span class="t">${hms(e.t)}</span><span class="ic">${EVICON[e.severity]||"i"}</span>
+    <span>${esc(e.msg)}${e.run?` <span class="run">· ${esc(e.run)}</span>`:""}</span></div>`).join("") || `<div class="muted">No events yet.</div>`;
+}
+
+/* ---------------- tables ---------------- */
+function renderConst(){
+  const by = {}; for (const s of S.sats){ (by[s.gnss] ||= []).push(s); }
+  const lost = (S.run && S.run.summary.lostByConstellation) || {};
+  const rows = CONST.filter(c=>by[c.name]).map(c=>{ const a=by[c.name], tr=a.filter(s=>s.cno>0), u=a.filter(s=>s.used);
+    const cn=tr.map(s=>s.cno).sort((x,y)=>y-x), avg=cn.length?cn.reduce((x,y)=>x+y,0)/cn.length:null, top=cn.slice(0,4);
+    const hiEl = tr.filter(s=>s.elev>=30);
+    return `<tr><td><span class="swatch" style="background:${css(c.v)}"></span>${c.name}</td><td class="r">${a.length}</td><td class="r">${tr.length}</td><td class="r">${u.length}</td>
+      <td class="r">${fmt(avg)}</td><td class="r">${top.length?fmt(top.reduce((x,y)=>x+y,0)/top.length):"–"}</td>
+      <td class="r">${hiEl.length?fmt(hiEl.reduce((x,s)=>x+s.cno,0)/hiEl.length):"–"}</td><td class="r">${lost[c.name]||0}</td></tr>`; });
+  $("#constTbl").innerHTML = `<thead><tr><th>Constellation</th><th class="r">Visible</th><th class="r">Tracked</th><th class="r">Used</th><th class="r">Mean C/N0</th><th class="r">Top-4</th><th class="r">≥30° elev</th><th class="r">Lost (run)</th></tr></thead><tbody>${rows.join("")}</tbody>`;
+}
+function renderSats(){
+  if (!$("#satTbl").closest("details").open) return;
+  const sig = {}; for (const g of S.sigs||[]) (sig[g.key] ||= []).push(g);
+  $("#satTbl").innerHTML = `<thead><tr><th>Sat</th><th>System</th><th>Signal</th><th class="r">C/N0</th><th class="r">Elev</th><th class="r">Az</th><th>Used</th><th>Quality</th><th class="r">PR res (m)</th></tr></thead><tbody>` +
+    S.sats.map(s=>`<tr><td><span class="swatch" style="background:${cColor(s.gnss)}"></span>${s.key}</td><td>${s.gnss}</td>
+      <td>${(sig[s.key]||[]).map(g=>`${g.sig} ${g.cno}`).join(", ")||"–"}</td><td class="r">${s.cno}</td><td class="r">${s.elev}°</td><td class="r">${s.azim}°</td>
+      <td>${s.used?"✓":""}</td><td>${QUALITY[s.quality]||s.quality}</td><td class="r">${fmt(s.prRes,1)}</td></tr>`).join("") + `</tbody>`;
+}
+$("#satTbl").closest("details").addEventListener("toggle", ()=> S && renderSats());
+
+let runsRaw = [];
+async function loadRuns(){ runsRaw = await fetch("/api/runs").then(r=>r.json());
+  const want = curRx();
+  runsCache = runsRaw.map(run => { const rx = run.receivers[want] || Object.values(run.receivers)[0] || {};
+    return Object.assign({}, rx.summary || {}, {id: run.id, label: run.label, start: run.start, duration: run.duration,
+      multi: run.multi, rxCount: Object.keys(run.receivers).length, rxName: rx.meta && rx.meta.name}); })
+    .filter(r => r.cnoTop !== undefined);
+  renderRuns(); renderOvRuns(); }
+function renderRuns(){
+  if (!runsCache.length){ $("#runsTbl").innerHTML = `<tbody><tr><td class="muted">No finished runs yet.</td></tr></tbody>`; return; }
+  let ref = runsCache.find(r=>r.id===refRunId) || runsCache.slice().reverse().find(r=>/base/i.test(r.label)) || runsCache[runsCache.length-1];
+  const d = (v,rv,better,dec=1) => { if (v==null||rv==null||ref===null) return ""; const x=v-rv; if (Math.abs(x)<Math.pow(10,-dec)/2) return "";
+    const good = better==="up" ? x>0 : x<0; return ` <small class="${good?"delta-good":"delta-bad"}">${x>0?"+":""}${x.toFixed(dec)}</small>`; };
+  const row = r => { const isRef = r.id===ref.id, R = isRef?{}:ref;
+    return `<tr><td><button class="btn sm" data-ref="${r.id}" title="Use as reference">${isRef?"★":"☆"}</button></td>
+    <td><b>${esc(r.label)}</b><br><span class="muted">${new Date(r.start*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})} · ${Math.round(r.duration)} s${r.rxCount>1?` · ${r.rxCount} GPS`:""}</span></td>
+    <td class="r">${fmt(r.cnoTop)}${d(r.cnoTop,R.cnoTop,"up")}</td>
+    <td class="r">${fmt(r.used)}${d(r.used,R.used,"up")}</td>
+    <td class="r">${r.gainCut!=null ? `${fmt(r.gainCut,1)} / ${fmt(r.gainCutMax,0)}` : r.agcDrop!=null ? fmt(r.agcDrop,1)+" %" : "–"}</td>
+    <td class="r">${fmt(r.agcPct,1)}${d(r.agcPct,R.agcPct,"up")}</td>
+    <td class="r">${fmt(r.noise,0)}${d(r.noise,R.noise,"down",0)}</td>
+    <td class="r">${r.pga!=null?fmt(r.pga,0)+d(r.pga,R.pga,"up",0):"–"}</td>
+    <td class="r">${r.specL1c!=null?fmt(r.specL1c,1)+d(r.specL1c,R.specL1c,"down"):"–"}</td>
+    <td class="r">${fmt(r.jamInd,0)}</td>
+    <td class="r">${r.unexpectedDrops} / ${r.drops}</td>
+    <td class="r">${fmt(r.hAcc,2)}${d(r.hAcc,R.hAcc,"down",2)}</td>
+    <td class="r">${r.posErrMax!=null?`${fmt(r.posErrP95,2)} / ${fmt(r.posErrMax,2)}`:"–"}</td>
+    <td class="r">${fmt(r.fix3Pct,0)}%</td>
+    <td class="r">${r.pairedWorst ? `<span class="${r.pairedWorst.med<=-1?"delta-bad":""}" title="${esc(r.pairedWorst.phase)}: ${r.pairedWorst.n} sats paired, ${r.pairedWorst.lost} lost">${r.pairedWorst.med>0?"+":""}${r.pairedWorst.med} dB</span>` : "–"}</td>
+    <td class="r">${(r.recovery||[]).length ? r.recovery.map(x=>x.recovered?`${x.seconds} s`:`&gt;${Math.round(x.observed)} s`).join(", ") : "–"}</td>
+    <td><button class="btn sm" data-ana="${r.id}" title="Show phase-by-phase analysis">Analyse</button> <a class="btn sm" href="/api/runs/${encodeURIComponent(r.id)}.zip" title="Full log, including position">CSV</a> <a class="btn sm" href="/api/runs/${encodeURIComponent(r.id)}/share.zip" title="Copy you can share: no coordinates, clock times, satellite IDs or chip serial. Position is kept as metres from the baseline average.">Share</a> <button class="btn sm" data-del="${r.id}" title="Delete">✕</button></td></tr>`; };
+  $("#runsTbl").innerHTML = `<thead><tr><th></th><th>Run</th><th class="r">C/N0 top-6</th><th class="r">SVs used</th><th class="r" title="Receiver gain reduction vs reference, mean / max (dB). M8: AGC drop">PGA red.</th><th class="r">AGC %</th><th class="r">Noise</th><th class="r">PGA</th><th class="r" title="L1 in-band power with the receiver's gain reduction added back">L1 power (corr.)</th><th class="r" title="Narrowband only - can fall under broadband interference">CW jam</th><th class="r">Drops (unexp./all)</th><th class="r">hAcc m</th><th class="r">Pos. err p95/max m</th><th class="r">3D fix</th><th class="r" title="Worst phase vs baseline, each satellite vs itself">ΔC/N0 paired</th><th class="r" title="Time to recover after an 'off' phase (fixed criteria)">Recovery</th><th></th></tr></thead><tbody>${runsCache.map(row).join("")}</tbody>`;
+}
+$("#runsTbl").addEventListener("click", e=>{
+  const r = e.target.closest("[data-ref]"), x = e.target.closest("[data-del]"), an = e.target.closest("[data-ana]");
+  if (an){ anaView = an.dataset.ana; loadAna(true); $("#anaCard").scrollIntoView({behavior:"smooth", block:"start"}); }
+  if (r){ refRunId = r.dataset.ref; localStorage.setItem("gpsscope.refRun", refRunId); renderRuns(); }
+  if (x && confirm("Delete this run's logs?")) fetch(`/api/runs/${encodeURIComponent(x.dataset.del)}`,{method:"DELETE"}).then(loadRuns);
+});
+$("#runsRefresh").onclick = loadRuns;
+
+/* ---------------- controls ---------------- */
+const PRESETS = ["Baseline, GPS only","RX powered, unbound","RX bound, 1:2 telem","RX bound, telem off","RX max power","RX WiFi mode","RX 5 cm away","RX 15 cm away","VTX on","Camera on","Copper-tape shield","Full quad armed"];
+$("#presets").innerHTML = PRESETS.map(p=>`<option value="${p}">`).join("");
+$("#runBtn").onclick = async () => {
+  if (S && S.hubRun){ await post("/api/run/stop"); loadRuns(); loadOvRuns(); }
+  else { const label = $("#runLabel").value.trim() || "Run " + new Date().toLocaleTimeString(); await post("/api/run/start",{label}); }
+  poll(true);
+};
+$("#markBtn").onclick = () => { const t = prompt("Marker note", "Changed setup"); if (t!==null) post("/api/marker",{text:t}).then(()=>poll(true)); };
+$("#baseBtn").onclick = () => { const label = prompt("Baseline label", S && S.run ? S.run.label : "RX off"); if (label!==null) post("/api/spectrum/baseline",{label}).then(()=>poll(true)); };
+$("#baseClr").onclick = () => post("/api/spectrum/baseline",{clear:true}).then(()=>poll(true));
+$("#maxBtn").onclick = () => post("/api/spectrum/resetmax").then(()=>poll(true));
+let specCorr = false, specSmooth = false, specRing = [], specRingT = 0;
+$("#smoothBtn").onclick = () => { specSmooth = !specSmooth; $("#smoothBtn").classList.toggle("on", specSmooth); drawSpectrum(); };
+$("#corrBtn").onclick = () => { specCorr = !specCorr; specRing.length = 0; $("#corrBtn").classList.toggle("on", specCorr); drawSpectrum(); };
+$("#specMode").onclick = e => { const b=e.target.closest("button"); if(!b) return; specMode=b.dataset.m;
+  [...$("#specMode").children].forEach(x=>x.classList.toggle("on",x===b)); drawSpectrum(); };
+$("#winSeg").onclick = e => { const b=e.target.closest("button"); if(!b) return; win=+b.dataset.w;
+  [...$("#winSeg").children].forEach(x=>x.classList.toggle("on",x===b)); drawAllTimelines(); };
+$("#evSeg").onclick = e => { const b=e.target.closest("button"); if(!b) return; evFilter=b.dataset.f;
+  [...$("#evSeg").children].forEach(x=>x.classList.toggle("on",x===b)); renderEvents(); };
+$("#simBtn").onclick = () => post("/api/sim/interference").then(()=>poll(true));
+$("#themeBtn").onclick = () => { const r=document.documentElement, dark = r.dataset.theme ? r.dataset.theme==="dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark"; try{localStorage.setItem("gpsscope.theme", r.dataset.theme);}catch(e){} drawAll(); };
+try{ const t=localStorage.getItem("gpsscope.theme"); if(t) document.documentElement.dataset.theme=t; }catch(e){}
+
+
+/* ---------------- wiring diagram ---------------- */
+const WIRE = {
+  uart: {
+    hostTitle:"Raspberry Pi 40-pin header", hostSub:"viewed from above, USB/Ethernet ports facing down",
+    wires:[
+      {cls:"w-pv",  label:"5 V",       gps:"VCC", pin:2,  pinName:"5V",            name:"Red · power"},
+      {cls:"w-gnd", label:"GND",       gps:"GND", pin:6,  pinName:"GND",           name:"Black · ground"},
+      {cls:"w-tx",  label:"GPS TX → Pi RX", gps:"TX", pin:10, pinName:"GPIO15 · RXD", name:"Yellow · data from GPS"},
+      {cls:"w-rx",  label:"GPS RX ← Pi TX", gps:"RX", pin:8,  pinName:"GPIO14 · TXD", name:"Green · config to GPS"},
+    ]},
+  usb: {
+    hostTitle:"USB-UART adapter (CP2102 / CH340 / FTDI)", hostSub:"set the jumper to 3.3 V logic if it has one",
+    wires:[
+      {cls:"w-pv",  label:"5 V",  gps:"VCC", host:"5V",  name:"Red · power"},
+      {cls:"w-gnd", label:"GND",  gps:"GND", host:"GND", name:"Black · ground"},
+      {cls:"w-tx",  label:"GPS TX → adapter RX", gps:"TX", host:"RXD", name:"Yellow · data from GPS"},
+      {cls:"w-rx",  label:"GPS RX ← adapter TX", gps:"RX", host:"TXD", name:"Green · config to GPS"},
+    ]},
+};
+const PINS = {1:"3V3",2:"5V",3:"GPIO2",4:"5V",5:"GPIO3",6:"GND",7:"GPIO4",8:"GPIO14 TXD",9:"GND",10:"GPIO15 RXD",11:"GPIO17",12:"GPIO18",13:"GPIO27",14:"GND",15:"GPIO22",16:"GPIO23",17:"3V3",18:"GPIO24",19:"GPIO10",20:"GND"};
+let wireMode = "uart";
+function drawMultiWiring(){
+  const rows = [["UART0","GPIO14 (pin 8)","GPIO15 (pin 10)","on by default (serial0)","on by default (serial0)"],
+    ["UART1 / UART2","GPIO0 (pin 27)","GPIO1 (pin 28)","dtoverlay=uart2","dtoverlay=uart1-pi5"],
+    ["UART2 / UART3","GPIO4 (pin 7)","GPIO5 (pin 29)","dtoverlay=uart3","dtoverlay=uart2-pi5"],
+    ["UART3 / UART4","GPIO8 (pin 24)","GPIO9 (pin 21)","dtoverlay=uart4","dtoverlay=uart3-pi5"],
+    ["UART4 / UART5","GPIO12 (pin 32)","GPIO13 (pin 33)","dtoverlay=uart5","dtoverlay=uart4-pi5"]];
+  $("#wireSvg").innerHTML = `<div class="tablewrap" style="max-height:none"><table>
+    <thead><tr><th>#</th><th>Pi TX → GPS RX</th><th>Pi RX ← GPS TX</th><th>Pi 4 config.txt</th><th>Pi 5 config.txt</th></tr></thead>
+    <tbody>${rows.map((r,i)=>`<tr><td><b>GPS ${i+1}</b> <span class="muted">${r[0]}</span></td><td>${r[1]}</td><td>${r[2]}</td><td><code>${r[3]}</code></td><td><code>${r[4]}</code></td></tr>`).join("")}</tbody></table></div>
+    <div class="note" style="margin-top:8px">Every GPS also needs <b>5 V</b> (pins 2 and 4) and its own <b>GND</b> (pins 6, 9, 14, 20, 25, 30, 34 and 39). Pi 3 / Zero 2 W: only GPS 1 is reliable, so add more through USB-UART adapters. Beyond 5, use USB-UART adapters on a <b>powered</b> USB hub. Each GPS is found automatically; label each port with <b>Spec</b>.</div>`;
+  $("#wireNotes").innerHTML = [["Pins 27/28 (GPIO0/1)","These are the HAT ID pins. Fine to use when no HAT is fitted."],
+    ["After editing config.txt","Reboot. The UARTs appear as /dev/ttyAMA1… and GPS Scope listens on each."],
+    ["Which receiver is which","Each GPS gets a tab named after its port. Set its product, antenna and distance from the RX with Spec."],
+    ["Control GPS","Put one GPS well away from the RX and mark it Control. The comparison subtracts its changes, removing the sky's effect."]]
+    .map(([t,d])=>`<div class="note"><b>${t}</b><br>${d}</div>`).join("");
+}
+let PI = "pi@" + (location.hostname || "raspberrypi.local");   // replaced by the Pi's own user@host from /api/version
+fetch("/api/version").then(r=>r.json()).then(v=>{ if (v.ssh){ PI = v.ssh; if ($("#cmd0")) drawCommands(); } }).catch(()=>{});
+const cmds = () => [
+  ["Update the Pi (run on your PC, in the folder that holds update.ps1)",
+   "powershell -ExecutionPolicy Bypass -File .\\update.ps1",
+   "Fixes the Pi's folder permissions, copies every file, restarts GPS Scope and prints the version now running. Then press Ctrl+F5 here."],
+  ["Restart GPS Scope", `ssh -t ${PI} "chmod -R u+rwX ~/gpsscope && sudo systemctl restart gpsscope"`, ""],
+  ["See the last log lines", `ssh ${PI} "systemctl status gpsscope --no-pager; journalctl -u gpsscope -n 40 --no-pager"`, ""],
+  ["List the serial ports / UARTs", `ssh ${PI} "grep -E '^(dtoverlay|enable_uart)' /boot/firmware/config.txt; ls -l /dev/serial* /dev/ttyAMA* /dev/ttyUSB* /dev/ttyACM* 2>/dev/null"`, ""],
+  ["Copy all runs to your PC", `scp -r ${PI}:~/gpsscope/runs .`, "Lands in a 'runs' folder wherever you run it."],
+  ["Watch a GPS live in u-center (while GPS Scope keeps logging)",
+   `tcp://${PI.split("@")[1]}:2101`,
+   "In u-center: Receiver > Connection > Network connection, enter this address. GPS1 is :2101, GPS2 :2102 and so on (shown on each receiver card). Read-only: u-center can't change the GPS. Every run also saves raw.ubx per receiver, which u-center opens with File > Open."],
+  ["Stop typing the password (one-off, makes an SSH key)",
+   `ssh-keygen -t ed25519 -N "" -f %USERPROFILE%\\.ssh\\id_ed25519
+type %USERPROFILE%\\.ssh\\id_ed25519.pub | ssh ${PI} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`,
+   "Two lines, for Command Prompt. Skip the first if you already have a key. After this, ssh and scp stop asking for the password."],
+  ["Restart without the sudo password (one-off)",
+   `ssh -t ${PI} "echo '${PI.split("@")[0]} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gpsscope' | sudo tee /etc/sudoers.d/gpsscope && sudo chmod 440 /etc/sudoers.d/gpsscope"`,
+   "Only this one restart command skips the password - everything else still asks."],
+];
+function drawCommands(){
+  $("#wireSvg").innerHTML = cmds().map(([t,c,n],i)=>`<div class="cmdh">${esc(t)}</div>
+    <div class="cmd"><pre id="cmd${i}">${esc(c)}</pre><button class="btn sm" data-copy="${i}">Copy</button></div>${n?`<div class="muted" style="font-size:12px;margin:-6px 0 10px">${esc(n)}</div>`:""}`).join("");
+  $("#wireNotes").innerHTML = ""; $("#wireStatus").innerHTML = `<span class="muted">Page version v${PAGE_VERSION}</span>`;
+}
+function copyText(t, btn){
+  const done = () => { const o = btn.textContent; btn.textContent = "Copied"; setTimeout(()=>btn.textContent = o, 1200); };
+  const fallback = () => {
+  const ta = document.createElement("textarea"); ta.value = t; ta.style.position = "absolute"; ta.style.left = "-9999px";   // http:// pages can't use the clipboard API
+  document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); done(); } catch(e){ alert("Select the text and press Ctrl+C"); } ta.remove(); };
+  if (navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(t).then(done, fallback); return; }
+  fallback();
+}
+$("#wireSvg").addEventListener("click", e => { const b = e.target.closest("[data-copy]"); if (b) copyText(cmds()[+b.dataset.copy][1], b); });
+$("#cmdBtn").onclick = () => { wireMode = "cmds"; [...$("#wireMode").children].forEach(x=>x.classList.toggle("on", x.dataset.w==="cmds")); drawWiring(); $("#wireDlg").showModal(); };
+function drawWiring(){
+  if (wireMode === "cmds"){ drawCommands(); return; }
+  if (wireMode === "multi"){ drawMultiWiring(); }
+  if (wireMode === "multi"){ const ok = (ovData ? ovData.receivers : rxList.map(r=>({info:{status:r.status}, port:r.port}))).filter(r=>/stream/.test(r.info.status||""));
+    $("#wireStatus").innerHTML = ok.length ? statusBadge("good", `${ok.length} receiver${ok.length>1?"s":""} streaming: ${ok.map(r=>esc(r.port)).join(", ")}`) : statusBadge("crit", "No receiver detected yet"); return; }
+  const W = 1040, H = 500, cfg = WIRE[wireMode], uart = wireMode==="uart";
+  const o = [];
+  // host
+  const hx = 30, hy = 40;
+  let anchor = {};
+  if (uart){
+    o.push(`<rect class="w-pcb" x="${hx}" y="${hy}" width="300" height="440" rx="14"/>`);
+    o.push(`<text class="w-tw" x="${hx+16}" y="${hy+26}">${cfg.hostTitle}</text><text class="w-tw2" x="${hx+16}" y="${hy+43}">${cfg.hostSub}</text>`);
+    const px = hx+150, py = hy+64, pitch = 16.5; // header block, rows 1..20
+    o.push(`<rect x="${px-14}" y="${py-14}" width="45" height="${20*pitch+12}" rx="4" fill="#111"/>`);
+    const used = new Set(cfg.wires.map(w=>w.pin));
+    for (let r=0;r<20;r++) for (let c=0;c<2;c++){
+      const n = r*2 + c + 1, x = px + c*pitch, y = py + r*pitch, on = used.has(n);
+      const w = cfg.wires.find(w=>w.pin===n);
+      o.push(`<rect x="${x-5}" y="${y-5}" width="10" height="10" rx="${n===1?0:5}" fill="${on?"#f2c94c":"#9a9a92"}" ${on?`stroke="#fff" stroke-width="1.5"`:""}/>`);
+      if (on) anchor[n] = {x:x, y:y, w};
+      if (c===0 && r<6) o.push(`<text class="w-tw2" x="${x-12}" y="${y+4}" text-anchor="end">${n} ${PINS[n]}</text>`);
+    }
+    for (const n of [2,4,6,8,10,12]) { const y = py + ((n/2)-1)*pitch; if (!used.has(n)) o.push(`<text class="w-tw2" x="${px+pitch+14}" y="${y+4}" opacity=".7">${n} ${PINS[n]}</text>`); }
+    o.push(`<text class="w-tw2" x="${hx+16}" y="${hy+424}">Pin 1 = square pad, at the SD-card end of the header.</text>`);
+  } else {
+    o.push(`<rect class="w-gpsboard" x="${hx}" y="${hy+90}" width="300" height="220" rx="12" fill="#1d3b6e"/>`);
+    o.push(`<rect x="${hx-22}" y="${hy+170}" width="40" height="60" rx="5" fill="#9a9a92"/><text class="w-tw2" x="${hx+30}" y="${hy+204}">USB → Pi</text>`);
+    o.push(`<text class="w-tw" x="${hx+16}" y="${hy+118}">${cfg.hostTitle}</text><text class="w-tw2" x="${hx+16}" y="${hy+135}">${cfg.hostSub}</text>`);
+    cfg.wires.forEach((w,i)=>{ const x = hx+262, y = hy+168 + i*30;
+      o.push(`<rect x="${x-6}" y="${y-6}" width="12" height="12" rx="6" fill="#f2c94c"/><text class="w-tw" x="${x-14}" y="${y+4}" text-anchor="end">${w.host}</text>`);
+      anchor[i] = {x, y, w}; });
+  }
+  // GPS module
+  const gx = 700, gy = 70, gw = 300, gh = 230;
+  o.push(`<rect class="w-gpsboard" x="${gx}" y="${gy}" width="${gw}" height="${gh}" rx="14"/>`);
+  o.push(`<rect x="${gx+150}" y="${gy+40}" width="120" height="120" rx="10" fill="#c9b58a"/><rect x="${gx+178}" y="${gy+68}" width="64" height="64" rx="6" fill="#b29a63"/>`);
+  o.push(`<text class="w-tw" x="${gx+18}" y="${gy+30}">GPS module</text><text class="w-tw2" x="${gx+18}" y="${gy+47}">u-blox M8 / M10</text><text class="w-tw2" x="${gx+210}" y="${gy+180}" text-anchor="middle">ceramic patch faces the sky</text>`);
+  const gpsPads = ["VCC","GND","TX","RX"]; const gpad = {};
+  gpsPads.forEach((p,i)=>{ const x = gx+18, y = gy+86 + i*30;
+    o.push(`<rect x="${x-6}" y="${y-6}" width="12" height="12" rx="3" fill="#f2c94c"/><text class="w-tw" x="${x+14}" y="${y+4}">${p}</text>`); gpad[p] = {x,y}; });
+  o.push(`<text class="w-tw2" x="${gx+18}" y="${gy+gh-14}">Also labelled 5V / G / T / R · SDA/SCL not needed</text>`);
+  // wires
+  const keys = Object.keys(anchor);
+  keys.forEach((k,i)=>{ const a = anchor[k], g = gpad[a.w.gps];
+    const mx = 590 - i*40;
+    o.push(`<g class="${a.w.cls}"><path class="w-wire" d="M${a.x} ${a.y} H${mx} V${g.y} H${g.x}"/><circle class="w-dotc" cx="${a.x}" cy="${a.y}" r="5"/><circle class="w-dotc" cx="${g.x}" cy="${g.y}" r="5"/></g>`);
+  });
+  // legend for wires
+  cfg.wires.forEach((w,i)=>{ const y = 340 + i*24;
+    o.push(`<g class="${w.cls}"><line class="w-wire" x1="700" y1="${y}" x2="730" y2="${y}"/></g><text class="w-t" x="740" y="${y+4}"><tspan font-weight="600">${w.label}</tspan>${uart?` <tspan class="w-t2">pin ${w.pin} (${w.pinName})</tspan>`:""}</text>`); });
+  // ELRS receiver on separate supply
+  const ex = 380, ey = 360;
+  o.push(`<rect x="${ex}" y="${ey}" width="150" height="70" rx="10" fill="#3b2f73"/><text class="w-tw" x="${ex+12}" y="${ey+24}">ELRS receiver</text><text class="w-tw2" x="${ex+12}" y="${ey+41}">under test</text><text class="w-tw2" x="${ex+12}" y="${ey+57}">TX/RX pads unconnected</text>`);
+  o.push(`<rect x="${ex+200}" y="${ey+12}" width="90" height="46" rx="8" fill="#555"/><text class="w-tw" x="${ex+245}" y="${ey+33}" text-anchor="middle">Power bank</text><text class="w-tw2" x="${ex+245}" y="${ey+49}" text-anchor="middle">or BEC, 5 V</text>`);
+  o.push(`<g class="w-elrs"><path class="w-wire w-dash" d="M${ex+150} ${ey+35} H${ex+200}"/></g><text class="w-t2" x="${ex+175}" y="${ey+28}" text-anchor="middle">5V+G</text>`);
+  o.push(`<text class="w-t2" x="${ex}" y="${ey-10}">Separate supply. Never power it from the Pi.</text>`);
+  $("#wireSvg").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Wiring diagram: GPS VCC to 5V, GND to GND, GPS TX to ${uart?"Pi GPIO15 RXD pin 10":"adapter RXD"}, GPS RX to ${uart?"Pi GPIO14 TXD pin 8":"adapter TXD"}">${o.join("")}</svg>`;
+  $("#wireNotes").innerHTML = (uart ? [
+    ["Cross TX and RX","GPS <b>TX</b> goes to Pi <b>RX</b> (GPIO15, pin 10). It's the most common reason for “no data”."],
+    ["Enable the UART","install.sh runs raspi-config to turn the serial console <b>off</b> and the serial port <b>on</b>. Reboot afterwards. The port is <code>/dev/serial0</code>."],
+    ["Voltage","Drone GPS boards take 5 V and output 3.3 V logic, which is safe for the Pi. Check your board: a bare 3.3 V module goes on pin 1 (3V3) instead."],
+    ["Pi 3 / Zero W","Bluetooth borrows the good UART. If data looks garbled, add <code>dtoverlay=disable-bt</code> to <code>/boot/firmware/config.txt</code>."],
+  ] : [
+    ["Cross TX and RX","GPS <b>TX</b> goes to adapter <b>RXD</b>, and GPS RX to adapter TXD."],
+    ["Port name","Usually <code>/dev/ttyUSB0</code> (CH340/CP2102/FTDI). Install with <code>GPS_PORT=/dev/ttyUSB0 bash install.sh</code>."],
+    ["Voltage","Use the adapter's 5 V pin for power, but 3.3 V logic levels. Most drone GPS boards tolerate 5 V logic, but don't rely on it."],
+    ["Why use one","It avoids the Pi's UART and Bluetooth quirks, and lets you plug the same setup into a laptop."],
+  ]).map(([t,d])=>`<div class="note"><b>${t}</b><br>${d}</div>`).join("");
+  if (rxSel === "overview" && ovData){ const ok = ovData.receivers.filter(r=>/stream/.test(r.info.status||""));
+    $("#wireStatus").innerHTML = ok.length ? statusBadge("good", `${ok.length} receiver${ok.length>1?"s":""} streaming: ${ok.map(r=>esc(r.port)).join(", ")}`) : statusBadge("crit", "No receiver detected yet");
+    return; }
+  const st = S && S.info ? S.info.status : "";
+  $("#wireStatus").innerHTML = !S ? "" : /stream/.test(st) ? statusBadge("good", `Receiver detected: ${S.info.model||""} on ${S.info.port}`) :
+    statusBadge("crit", st || "No receiver detected");
+}
+$("#specBtn").onclick = () => { const id = curRx(); if (id) openSpec(id); };
+$("#wireBtn").onclick = () => { drawWiring(); $("#wireDlg").showModal(); };
+$("#wireClose").onclick = () => $("#wireDlg").close();
+$("#wireDlg").addEventListener("click", e => { if (e.target.id==="wireDlg") e.target.close(); });
+$("#wireMode").onclick = e => { const b=e.target.closest("button"); if(!b) return; wireMode=b.dataset.w;
+  [...$("#wireMode").children].forEach(x=>x.classList.toggle("on",x===b)); drawWiring(); };
+let wireAutoShown = false;
+function maybeAutoWiring(){
+  if (wireAutoShown || !S || S.info.sim) return;
+  if (/no u-blox data|could not open|No such file|Permission denied/i.test(S.info.status||"")){ wireAutoShown = true; drawWiring(); $("#wireDlg").showModal(); }
+  else if ($("#wireDlg").open) drawWiring();
+}
+/* ---------------- phases & analysis ---------------- */
+$("#phaseSeg").onclick = async e => { const b = e.target.closest("button"); if (!b) return;
+  if (!S || !S.hubRun){ alert("Start a run first - phases split a run."); return; }
+  let name = b.dataset.p; if (name === "+"){ name = prompt("Phase name (e.g. 'RX 15 cm', 'Telemetry off')", ""); if (!name) return; }
+  await post("/api/phase", {name}); poll(true); };
+function renderPhaseSeg(){ const cur = S && S.hubRun ? S.hubRun.phase : null;
+  [...$("#phaseSeg").children].forEach(b => b.classList.toggle("on", !!cur && b.dataset.p === cur));
+  $("#phaseSeg").style.opacity = S && S.hubRun ? 1 : .45;
+  const cust = cur && !["Baseline","RX on","RX off"].includes(cur); $("#phaseSeg").lastElementChild.textContent = cust ? `+ ${cur}` : "+";
+  $("#phaseSeg").lastElementChild.classList.toggle("on", cust); }
+let anaView = "live", anaData = null, anaT = 0;
+async function loadAna(force){
+  if (!force && Date.now() - anaT < 4000) return; anaT = Date.now();
+  const url = anaView === "live" ? "/api/run/analysis" : `/api/runs/${encodeURIComponent(anaView)}/analysis`;
+  try { anaData = await fetch(withRx(url)).then(r=>r.json()); } catch(e){ anaData = null; }
+  renderAna(); }
+$("#anaLive").onclick = () => { anaView = "live"; loadAna(true); };
+function renderAna(){
+  const a = anaData, tb = $("#anaTbl");
+  if (!a){ $("#anaWhich").textContent = ""; tb.innerHTML = `<tbody><tr><td class="muted">${anaView==="live" ? "No run recording. Start a run, mark phases with Baseline / RX on / RX off as you go, and the comparison builds here." : "No analysis."}</td></tr></tbody>`; $("#anaNotes").innerHTML=""; return; }
+  $("#anaWhich").textContent = `${a.live ? "● live · " : ""}${a.label||""} · phases from ${a.phaseSource||"phase marks"}`;
+  const P = a.phases, meta = Object.fromEntries(a.metricsMeta.map(m=>[m.key,m]));
+  meta.posErr = {label:"Horizontal error (re baseline)", unit:"m", dec:2, better:"down"};
+  const head = `<thead><tr><th>Metric</th>${P.map(p=>`<th class="r" title="${p.n} samples, ${p.dur} s">${esc(p.name)}${p.baseline?" (ref)":""}<br><span class="muted" style="font-weight:400">${Math.round(p.dur)} s${p.lowConfidence?' · <span title="Shorter than 60 s - treat as indicative" style="color:var(--crit)">short</span>':""}</span></th>`).join("")}</tr></thead>`;
+  const cell = (p,k) => { const m = p.metrics[k]; if (!m || m.med==null) return `<td class="r muted">–</td>`;
+    const mm = meta[k], d = p.delta[k]; let ds = "";
+    if (d!=null && Math.abs(d) >= Math.pow(10,-mm.dec)/2){ const good = mm.better ? (mm.better==="up" ? d>0 : d<0) : null;
+      ds = ` <small class="${good==null?"muted":good?"delta-good":"delta-bad"}">${d>0?"+":""}${d.toFixed(mm.dec)}</small>`; }
+    const extra = k==="posErr" && m.p95!=null ? ` · p95 ${m.p95}` : "";
+    return `<td class="r" title="IQR ${m.p25}–${m.p75}, n=${m.n}${extra}">${m.med.toFixed(mm.dec)}${ds}${k==="posErr"&&m.p95!=null?`<br><span class="muted">p95 ${m.p95}</span>`:""}</td>`; };
+  const keys = ["cnoTop","used","tracked","pga","agcPct","spikes","jamInd","specL1c","pDOP","hAcc","posErr"].filter(k => P.some(p=>p.metrics[k] && p.metrics[k].med!=null));
+  let rows = keys.map(k=>`<tr><td>${meta[k].label}${meta[k].unit?` <span class="muted">${meta[k].unit}</span>`:""}</td>${P.map(p=>cell(p,k)).join("")}</tr>`).join("");
+  rows += `<tr><td title="Each satellite compared only with itself, satellites tracked in both phases">ΔC/N0 paired <span class="muted">dB</span></td>${P.map(p=> p.baseline ? `<td class="r muted">ref</td>` :
+    p.paired && p.paired.med!=null ? `<td class="r" title="IQR ${p.paired.p25}–${p.paired.p75}; ${Object.entries(p.paired.byConst).map(([g,v])=>`${g} ${v.med>0?"+":""}${v.med} (n=${v.n})`).join(", ")}"><b class="${p.paired.med<=-1?"delta-bad":p.paired.med>=1?"delta-good":""}">${p.paired.med>0?"+":""}${p.paired.med}</b><br><span class="muted">n=${p.paired.n}</span></td>` : `<td class="r muted">–</td>`).join("")}</tr>`;
+  rows += `<tr><td title="Baseline satellites that were observed but barely tracked in this phase">SVs lost</td>${P.map(p=> p.baseline ? `<td class="r muted">ref</td>` :
+    p.paired ? `<td class="r" title="${esc(p.paired.lost.join(", "))}">${p.paired.lost.length}</td>` : `<td class="r muted">–</td>`).join("")}</tr>`;
+  rows += `<tr><td title="Share of fixes where the real movement was more than 2× the GPS's own accuracy estimate">Error &gt; 2×hAcc <span class="muted">% of epochs</span></td>${P.map(p=> p.overconfidentPct!=null ? `<td class="r"><span class="${p.overconfidentPct>=5?"delta-bad":""}">${p.overconfidentPct}%</span></td>` : `<td class="r muted">–</td>`).join("")}</tr>`;
+  tb.innerHTML = head + `<tbody>${rows}</tbody>`;
+  const t0 = a.start || (P[0] && P[0].t) || 0;
+  const rec = (a.recovery||[]).map(r => r.recovered ? statusBadge("good", `Recovery ${r.seconds} s after '${r.phase}'`) :
+    statusBadge("serious", `No recovery within ${Math.round(r.observed)} s of '${r.phase}'`)).join(" ");
+  const det = (a.detected||[]).length ? `Detected: ${a.detected.map(d=>`${esc(d.signal)} ${d.what} at +${(d.t-t0).toFixed(1)} s`).join("; ")}` : "";
+  $("#anaNotes").innerHTML = [rec ? `<span title="${esc(a.recoveryRules)}">${rec} ⓘ</span>` : "",
+    det, ...(a.notes||[]).map(n=>statusBadge("warn", n))].filter(Boolean).map(x=>`<div style="margin-top:4px">${x}</div>`).join("");
+}
+
+function showVersion(sv){ const el = $("#verTag"); if (!el) return;
+  el.textContent = sv === PAGE_VERSION ? `v${sv}` : `server v${sv||"?"} · page v${PAGE_VERSION} - press Ctrl+F5`;
+  el.style.color = sv === PAGE_VERSION ? "" : "var(--crit)"; }
+/* ---------------- receivers: tab bar, overview, spec ---------------- */
+const RXC = ["--gps","--gal","--bds","--glo","--sbas","--qzss","--navic","--crit"];   // fixed order per receiver
+const rxColor = id => css(RXC[Math.max(0, rxList.findIndex(r=>r.id===id)) % RXC.length]);
+function renderRxBar(){
+  const bar = $("#rxBar");
+  const tabs = [`<button class="rxtab ${rxSel==="overview"?"on":""}" data-rx="overview">Overview · ${rxList.length} GPS</button>`]
+    .concat(rxList.map(r => `<button class="rxtab ${rxSel===r.id?"on":""}" data-rx="${r.id}"><span class="dot ${/stream/.test(r.status||"")?"ok":"bad"}"></span>${esc(r.name||r.id)} <span class="role">${esc(r.role||"")}</span></button>`));
+  const html = tabs.join(""); if (bar._h !== html){ bar.innerHTML = html; bar._h = html; }
+}
+$("#rxBar").onclick = e => { const b = e.target.closest("[data-rx]"); if (!b) return; selectRx(b.dataset.rx); };
+function selectRx(id){
+  if (id === rxSel) return; rxSel = id; try{ localStorage.setItem("gpsscope.rx", id); }catch(e){}
+  history.length = 0; events.length = 0; lastT = 0; lastEv = 0; WF.length = 0; wfLastT = 0; specRing.length = 0; droppedKeys.clear(); anaView = "live";
+  mapCentered = false; if (map){ if (posMk){ map.removeLayer(posMk); posMk=null; } if (refMk){ map.removeLayer(refMk); map.removeLayer(thrCircle); refMk=thrCircle=null; } }
+  showView(); if (rxSel !== "overview"){ wfPrefill(); loadRuns(); } poll(true);
+}
+function showView(){ const ov = rxSel === "overview";
+  $("#overviewView").style.display = ov ? "" : "none"; document.querySelector("main").style.display = ov ? "none" : "";
+  if (ov){ ovHist = {}; ovLastT = 0; pollOverview(true); loadOvRuns(); } }
+
+let ovData = null, ovHist = {}, ovLastT = 0, ovCmpView = "live", ovCmp = null, ovCmpT = 0;
+let ovBusy = false;
+async function pollOverview(force){
+  if (rxSel !== "overview" || ovBusy) return;     // one request at a time - overlapping polls duplicated history
+  ovBusy = true;
+  try { ovData = await fetch(`/api/overview?since=${ovLastT}`).then(r=>r.json()); } catch(e){ ovBusy = false; return; }
+  ovBusy = false;
+  for (const r of ovData.receivers){ const h = ovHist[r.id] = ovHist[r.id] || []; const lastT = h.length ? h[h.length-1].t : 0;
+    for (const x of r.history){ if (x.t > lastT) h.push(x); }       // append only newer points, never out of order
+    if (h.length > 3600) h.splice(0, h.length-3600);
+    if (r.history.length) ovLastT = Math.max(ovLastT, r.history[r.history.length-1].t); }
+  showVersion(ovData.version);
+  rxList = ovData.receivers.map(r=>({id:r.id, name:r.meta.name, role:r.meta.role, status:r.info.status, port:r.port})); renderRxBar();
+  renderOvCards(); drawOvCharts();
+  if (force || Date.now() - ovCmpT > 4000){ ovCmpT = Date.now(); loadOvCmp(); }
+  // header bits
+  const hr = ovData.run; $("#runBtn").textContent = hr ? "Stop run" : "Start run"; $("#runBtn").className = "btn " + (hr?"danger":"primary");
+  $("#runLive").innerHTML = hr ? `<span class="rec"></span>${Math.floor(hr.elapsed/60)}:${String(Math.floor(hr.elapsed%60)).padStart(2,"0")} · ${hr.receivers.length} GPS` : "";
+  S = Object.assign(S || {}, {hubRun: hr, sim_interference: ovData.sim_interference, info: Object.assign((S&&S.info)||{}, {sim: ovData.receivers.some(r=>r.info.sim)})});
+  renderPhaseSeg();
+  const okN = ovData.receivers.filter(r=>/stream/.test(r.info.status||"")).length;
+  $("#devDot").className = "dot " + (okN ? "ok" : "bad"); $("#devTxt").textContent = `${okN}/${ovData.receivers.length} receivers streaming`;
+  $("#simBtn").style.display = S.info.sim ? "" : "none"; $("#simBtn").textContent = "Sim: RFI " + (ovData.sim_interference ? "on" : "off");
+}
+function specLine(m){ return [m.product, m.antenna, m.distance_cm!==""&&m.distance_cm!=null ? `${m.distance_cm} cm from RX` : "", m.location].filter(Boolean).map(esc).join(" · ") || `<span class="muted">No spec - Edit spec</span>`; }
+function renderOvCards(){
+  const box = $("#ovCards");
+  if (!ovData.receivers.length){ box.innerHTML = `<div class="note">No receivers found yet. GPS Scope listens on the Pi UART(s) and every USB serial adapter, and adds any u-blox it hears. Open <b>Wiring</b> for how to connect several.</div>`; return; }
+  box.innerHTML = ovData.receivers.map(r => { const n = r.now || {}, ok = /stream/.test(r.info.status||"");
+    const gl = gainLevel({gainCut:n.gainCut, agcDrop:n.agcDrop});
+    return `<div class="rxcard" style="border-left:4px solid ${rxColor(r.id)}">
+      <h3><span class="dot ${ok?"ok":"bad"}"></span>${esc(r.meta.name||r.id)} <span class="pill ${esc(r.meta.role)}">${esc(r.meta.role)}</span>${r.inRun?' <span class="rec" title="in run"></span>':""}</h3>
+      <div class="spec">${specLine(r.meta)}</div>
+      <div class="muted" style="font-size:11.5px">${esc(r.port||"")} · ${esc(r.info.model||"?")} ${r.info.fw?`fw ${esc(r.info.fw)}`:""}${r.info.uniqid?` · chip ${esc(r.info.uniqid)}`:""}${r.info.ubx_tcp?` · <span title="Open in u-center: Receiver > Connection > Network connection > tcp://${esc(location.hostname)}:${r.info.ubx_tcp}. Read-only unless GPS Scope runs with --ubx-tcp-write.">u-center tcp://${esc(location.hostname)}:${r.info.ubx_tcp}</span>`:""}${ok?"":` · ${esc(r.info.status||"")}`}</div>
+      ${r.meta.chip_changed ? statusBadge("warn","Different chip on this port than last time - check the spec") : ""}
+      <div class="mini">
+        <div><div class="k">Fix · SVs</div><div class="v">${esc(r.fix||"–")} <small>${n.used ?? "–"}</small></div></div>
+        <div><div class="k">C/N0 top-6</div><div class="v">${fmt(n.cnoTop,1)}</div></div>
+        <div><div class="k">PGA red.</div><div class="v">${n.gainCut!=null ? (n.gainCut?"−":"")+n.gainCut+" dB" : n.agcDrop!=null ? "−"+fmt(n.agcDrop,0)+"%" : "–"}</div></div>
+        <div><div class="k">Spurs</div><div class="v">${n.spikes ?? "–"}</div></div>
+        <div><div class="k">H. error</div><div class="v">${n.runErr!=null ? fmt(n.runErr,2)+" m" : "–"}</div></div>
+        <div><div class="k">hAcc</div><div class="v">${(r.fixType>=2 && n.hAcc!=null && n.hAcc<1000) ? fmt(n.hAcc,2)+" m" : '<span class="muted">no fix</span>'}</div></div>
+      </div>
+      <div class="acts">${statusBadge(gl, gl==="good"?"PGA nominal":gl==="none"?"–":"PGA reduced")}<span style="flex:1"></span>
+        <button class="btn sm" data-edit="${r.id}">Edit spec</button><button class="btn sm" data-open="${r.id}">Open</button></div></div>`; }).join("");
+}
+$("#ovCards").onclick = e => { const o = e.target.closest("[data-open]"), ed = e.target.closest("[data-edit]");
+  if (o) selectRx(o.dataset.open); if (ed) openSpec(ed.dataset.edit); };
+function drawOvChart(cv, key, opts){
+  const series = (ovData ? ovData.receivers : []).filter(r=>r.meta.role!=="ignore").map(r => ({name: r.meta.name||r.id, color: rxColor(r.id), pts: (ovHist[r.id]||[]).map(x=>[x.t, x[key]])}));
+  const saveH = history; // drawTimeline reads global history for the time axis
+  const all = series.flatMap(s=>s.pts); history = all.length ? [{t: Math.max(...all.map(p=>p[0]))}] : [];
+  drawTimeline(cv, Object.assign({series, labelRight:false}, opts)); history = saveH;
+}
+function drawOvCharts(){ if (!ovData) return;
+  drawOvChart($("#ovCno"), "cnoTop", {unit:"dB-Hz", floor:0}); drawOvChart($("#ovGain"), "gainCut", {unit:"dB", min:0, dec:0});
+  drawOvChart($("#ovMove"), "runErr", {unit:"m", min:0, dec:2});
+  const lg = ovData.receivers.filter(r=>r.meta.role!=="ignore").map(r=>`<span><i class="sw" style="background:${rxColor(r.id)}"></i>${esc(r.meta.name||r.id)}</span>`).join("");
+  document.querySelectorAll(".ovLeg").forEach(x=>x.innerHTML = lg);
+  $("#ovLegend").innerHTML = ovData.receivers.filter(r=>r.meta.role!=="ignore").map(r=>`<span><i class="sw" style="background:${rxColor(r.id)}"></i>${esc(r.meta.name||r.id)} <span class="pill ${esc(r.meta.role)}">${esc(r.meta.role)}</span></span>`).join(""); }
+for (const id of ["ovCno","ovGain","ovMove"]){ const cv = $("#"+id); timelineHover(cv); redrawers.set(cv, drawOvCharts); }
+
+async function loadOvCmp(){
+  const url = ovCmpView === "live" ? "/api/run/compare" : `/api/runs/${encodeURIComponent(ovCmpView)}/compare`;
+  try { ovCmp = await fetch(url).then(r=>r.json()); } catch(e){ ovCmp = null; } renderOvCmp(); }
+$("#ovCmpLive").onclick = () => { ovCmpView = "live"; loadOvCmp(); };
+function renderOvCmp(){
+  const c = ovCmp, tb = $("#ovCmpTbl");
+  if (!c || !c.phases.length){ $("#ovCmpWhich").textContent=""; tb.innerHTML = `<tbody><tr><td class="muted">${ovCmpView==="live" ? "Start a run and mark phases (Baseline → RX on → RX off). Every receiver is split at the same marks and compared here." : "No comparison for this run."}</td></tr></tbody>`; $("#ovCmpNote").innerHTML=""; return; }
+  $("#ovCmpWhich").textContent = `${c.live?"● live · ":""}${c.label||""}`;
+  const rids = Object.keys(c.receivers);
+  let html = "";
+  for (const ph of c.phases){
+    html += `<thead><tr><th>${esc(ph.name)} <span class="muted" style="font-weight:400">vs Baseline</span></th>${rids.map(r=>{ const R=c.receivers[r];
+      return `<th class="r ${R.role==="control"?"ctl":""}" title="${esc([R.product,R.antenna,R.location].filter(Boolean).join(" · "))}"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${rxColor(r)};margin-right:4px"></span>${esc(R.name)}<br><span class="muted" style="font-weight:400">${esc(R.role)}${R.distance_cm?` · ${esc(R.distance_cm)} cm`:""}${ph.rows[r]&&ph.rows[r].short?' · <span style="color:var(--crit)">short</span>':""}</span></th>`; }).join("")}</tr></thead><tbody>`;
+    for (const k of c.keys){
+      html += `<tr><td>${k.label}${k.unit?` <span class="muted">${k.unit}</span>`:""}</td>${rids.map(r=>{ const row = ph.rows[r]; if (!row || row[k.key]==null) return `<td class="r muted">–</td>`;
+        const v = row[k.key], a = ph.adjusted[r] && ph.adjusted[r][k.key];
+        const floor = {paired:1, dCno:1, dUsed:1, dPga:1, dMove:0.3}[k.key];   // changes smaller than this aren't coloured
+        const cls = a!=null && floor!=null && Math.abs(a) >= floor ? ((k.better==="up" ? a>0 : a<0) ? "delta-good" : "delta-bad") : "";
+        return `<td class="r">${(k.adjustable && v>0?"+":"")}${(+v).toFixed(k.dec)}${k.adjustable && a!=null ? `<small class="${cls}">ctrl-adj. ${a>0?"+":""}${a.toFixed(k.dec)}</small>` : ""}${k.key==="paired"&&row.pairedN?`<small>n=${row.pairedN}</small>`:""}</td>`; }).join("")}</tr>`;
+    }
+    if (rids.some(r=>ph.rows[r] && ph.rows[r].recovery)) html += `<tr><td title="${esc("fixed criteria - see Run analysis")}">Recovery</td>${rids.map(r=>{ const x = ph.rows[r] && ph.rows[r].recovery;
+      return `<td class="r">${!x ? "–" : x.recovered ? `${x.seconds} s` : `<span class="delta-bad">&gt;${Math.round(x.observed)} s</span>`}</td>`; }).join("")}</tr>`;
+    html += `</tbody>`;
+  }
+  tb.innerHTML = html; $("#ovCmpNote").innerHTML = (c.note ? statusBadge("warn", c.note) : "") +
+    `<div class="muted" style="margin-top:4px">Colour applies to control-adjusted values only, beyond ±1 dB / ±1 SV / ±0.3 m.</div>`;
+}
+function loadOvRuns(){ loadRuns(); }
+function renderOvRuns(){
+  const tb = $("#ovRunsTbl"); if (!tb) return;
+  if (!runsRaw.length){ tb.innerHTML = `<tbody><tr><td class="muted">No runs yet.</td></tr></tbody>`; return; }
+  tb.innerHTML = `<thead><tr><th>Run</th><th>Receivers</th><th class="r">Phases</th><th></th></tr></thead><tbody>` + runsRaw.map(r => `<tr>
+    <td><b>${esc(r.label)}</b><br><span class="muted">${new Date(r.start*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})} · ${Math.round(r.duration)} s</span></td>
+    <td>${r.multi ? Object.values(r.receivers).map(x=>`${esc((x.meta&&x.meta.name)||"?")} <span class="pill ${esc(x.meta&&x.meta.role)}">${esc((x.meta&&x.meta.role)||"")}</span>`).join("<br>") : `<span class="muted">single GPS (older run)</span>`}</td>
+    <td class="r">${esc((r.phases||[]).join(" → ") || "–")}</td>
+    <td>${r.multi?`<button class="btn sm" data-cmp="${r.id}">Compare</button> `:""}<a class="btn sm" href="/api/runs/${encodeURIComponent(r.id)}.zip" title="Full log, including position">CSV</a> <a class="btn sm" href="/api/runs/${encodeURIComponent(r.id)}/share.zip" title="Copy you can share: no coordinates, clock times, satellite IDs or chip serial. Position is kept as metres from the baseline average.">Share</a></td></tr>`).join("") + `</tbody>`;
+}
+$("#ovRunsTbl").onclick = e => { const b = e.target.closest("[data-cmp]"); if (b){ ovCmpView = b.dataset.cmp; loadOvCmp(); $("#ovCmpCard").scrollIntoView({behavior:"smooth"}); } };
+$("#ovRunsRefresh").onclick = loadRuns;
+
+let specRx = null;
+async function openSpec(id){
+  specRx = id; const o = await fetch("/api/overview?since=" + (Date.now()/1000+5)).then(r=>r.json()); const r = o.receivers.find(x=>x.id===id); if (!r) return;
+  const f = $("#specForm"); for (const k of ["name","role","product","antenna","location","distance_cm","notes"]) f.elements[k].value = r.meta[k] || (k==="role"?"test":"");
+  $("#specFor").textContent = r.id; $("#specPort").textContent = `${r.port} (${r.dev})`;
+  $("#specChip").textContent = `${r.info.model||"?"} · fw ${r.info.fw||"?"} · protocol ${r.info.protver||"?"}${r.info.uniqid?` · chip ID ${r.info.uniqid}`:""}`;
+  $("#specDlg").showModal(); }
+$("#specCancel").onclick = () => $("#specDlg").close();
+$("#specSave").onclick = async () => { const f = $("#specForm"), body = {};
+  for (const k of ["name","role","product","antenna","location","distance_cm","notes"]) body[k] = f.elements[k].value;
+  await fetch(`/api/receivers/${encodeURIComponent(specRx)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  $("#specDlg").close(); pollOverview(true); poll(true); };
+
+/* ---------------- main loop ---------------- */
+function drawAllTimelines(){ drawCno(); SMALLS.forEach(drawSmall); }
+function drawAll(){ if (rxSel === "overview"){ drawOvCharts(); return; } if (!S || S.waiting) return; renderTiles(); renderPhaseSeg(); if (anaView==="live") loadAna(); wfPush(); drawSpectrum(); drawWaterfall(); renderPga(); drawSky(); drawBars(); drawAllTimelines(); drawDrift(); renderRef(); updateMap(); renderConst(); renderSats(); renderEvents();
+  $("#constLegend").innerHTML = CONST.filter(c=>S.sats.some(s=>s.gnss===c.name)).map(c=>`<span><i class="sw dot" style="background:${css(c.v)}"></i>${c.name}</span>`).join(""); }
+
+let polling=false;
+async function poll(force){
+  if (rxSel === "overview"){ return pollOverview(force); }
+  if (polling && !force) return; polling = true;
+  try{
+    const r = await fetch(withRx(`/api/state?since=${lastT}&ev=${lastEv}`)); S = await r.json();
+    rxList = S.receivers || []; renderRxBar(); showVersion(S.version);
+    if (S.waiting){ $("#devDot").className="dot bad"; $("#devTxt").textContent = S.info.status; polling=false; return; }
+    for (const hh of S.history){ history.push(hh); lastT = hh.t; } if (history.length > 3600) history.splice(0, history.length-3600);
+    for (const e of S.events){ events.push(e); lastEv = e.id; if (e.kind==="sat_drop") droppedKeys.set(e.data.sat, e.t); if (e.kind==="mass_drop") e.data.sats.forEach(k=>droppedKeys.set(k,e.t)); }
+    if (events.length > 1000) events.splice(0, events.length-1000);
+    const i = S.info, ok = /stream/.test(i.status||"");
+    $("#devDot").className = "dot " + (ok?"ok":"bad");
+    $("#devTxt").textContent = ok ? `${i.model||"receiver"} · fw ${i.fw||"?"} · ${i.port}${i.baud?" @ "+i.baud:""}` : i.status;
+    $("#simBtn").style.display = i.sim ? "" : "none";
+    $("#simBtn").textContent = "Sim: RFI " + (S.sim_interference ? "on" : "off");
+    $("#simBtn").classList.toggle("on", S.sim_interference);
+    $("#specCard").style.display = (i.spectrum || !i.protver) ? "" : "none";
+    const run = S.hubRun ? Object.assign({summary: (S.run||{}).summary || {cnoTop:null, unexpectedDrops:0}}, S.hubRun) : null;
+    $("#runBtn").textContent = run ? "Stop run" : "Start run"; $("#runBtn").className = "btn " + (run?"danger":"primary");
+    $("#runLive").innerHTML = run ? `<span class="rec"></span>${Math.floor(run.elapsed/60)}:${String(Math.floor(run.elapsed%60)).padStart(2,"0")} · ${run.summary.unexpectedDrops} unexpected drops` : "";
+    $("#runLive").title = run ? `Recording “${run.label}” · top-6 ${fmt(run.summary.cnoTop)} dB-Hz` : "";
+    const li = $("#runLabel"); li.readOnly = !!run; if (run && document.activeElement !== li) li.value = run.label;
+    drawAll(); maybeAutoWiring();
+  } catch(e){ $("#devDot").className="dot bad"; $("#devTxt").textContent="web UI lost contact with the Pi"; }
+  polling = false;
+}
+buildSmalls(); initMap(); showView(); loadRuns(); if (rxSel!=="overview") wfPrefill(); poll(); setInterval(poll, 1000);
+let rz = 0; addEventListener("resize", ()=>{ cancelAnimationFrame(rz); rz = requestAnimationFrame(()=>{ drawAll(); map && map.invalidateSize(); }); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+</script>
+</body>
+</html>
