@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.8";
+const PAGE_VERSION = "2026-10-18.9";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1043,11 +1043,18 @@ function drawCommands(){
     <div class="cmd"><pre id="cmd${i}">${esc(c)}</pre><button class="btn sm" data-copy="${i}">Copy</button></div>${n?`<div class="muted" style="font-size:12px;margin:-6px 0 10px">${esc(n)}</div>`:""}`).join("");
   $("#wireNotes").innerHTML = ""; $("#wireStatus").innerHTML = `<span class="muted">Page version v${PAGE_VERSION}</span>`;
 }
+function selectPre(btn){ const pre = btn.parentElement && btn.parentElement.querySelector("pre"); if (!pre) return;
+  const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }
 function copyText(t, btn){
   const done = () => { const o = btn.textContent; btn.textContent = "Copied"; setTimeout(()=>btn.textContent = o, 1200); };
-  const fallback = () => {
-  const ta = document.createElement("textarea"); ta.value = t; ta.style.position = "absolute"; ta.style.left = "-9999px";   // http:// pages can't use the clipboard API
-  document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); done(); } catch(e){ alert("Select the text and press Ctrl+C"); } ta.remove(); };
+  const fallback = () => {          // http:// pages can't use the clipboard API: copy from a focused, selected textarea
+    const ta = document.createElement("textarea"); ta.value = t; ta.setAttribute("readonly", "");
+    Object.assign(ta.style, {position: "fixed", top: "0", left: "0", width: "1px", height: "1px", opacity: "0"});
+    (btn.closest("dialog") || document.body).appendChild(ta);   // a modal dialog makes everything outside it unfocusable
+    ta.focus(); ta.select(); ta.setSelectionRange(0, t.length);
+    let ok = false; try { ok = document.execCommand("copy"); } catch(e){}
+    ta.remove(); btn.focus();
+    if (ok) done(); else { btn.textContent = "Select + Ctrl+C"; selectPre(btn); } };
   if (navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(t).then(done, fallback); return; }
   fallback();
 }
