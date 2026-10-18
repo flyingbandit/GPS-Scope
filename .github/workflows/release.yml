@@ -1,7 +1,8 @@
-# Builds the Windows and Raspberry Pi downloads and publishes a GitHub release
-# whenever a tag like v2026.10.18 is pushed.
-name: release
+# Builds the Windows and Raspberry Pi downloads and publishes a GitHub release.
+# Run it from the Actions tab (Release -> Run workflow), or push a tag like v2026.10.18.
+name: Release
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 permissions:
@@ -15,6 +16,8 @@ jobs:
         run: |
           VER=$(grep -m1 -oP 'GPSSCOPE_VERSION = "\K[^"]+' gpsscope.py)
           echo "VER=$VER" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG="$GITHUB_REF_NAME"; else TAG="v$VER"; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
           mkdir -p dist
           # Windows: launcher and PowerShell script need CRLF line endings
           git archive --prefix=GPS-Scope/ HEAD | tar x -C dist
@@ -29,5 +32,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "GPS Scope $VER" --notes-file .github/RELEASE_NOTES.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
+              --title "GPS Scope $VER" --notes-file .github/RELEASE_NOTES.md
+          fi
