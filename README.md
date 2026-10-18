@@ -3,7 +3,19 @@
 ![GPS Scope dashboard (simulated data)](docs/screenshot.png)
 
 
-A Raspberry Pi tool for finding out whether an ELRS receiver (or VTX, camera, ESCs…) is degrading a u-blox M8 or M10 GPS. It talks to the GPS directly, so the flight controller is not involved. A live web UI on your phone or laptop shows:
+A tool for finding out whether an ELRS receiver (or VTX, camera, ESCs…) is degrading a u-blox M8 or M10 GPS. It reads the GPS's own diagnostics (spectrum, front-end gain, per-satellite signal) and shows them in a live web dashboard.
+
+**Two ways to use it:**
+
+| | Quick check: laptop + FC | In-depth testing: Raspberry Pi |
+|---|---|---|
+| Hardware | Windows laptop, USB cable to the quad | Raspberry Pi wired to one or more GPS modules |
+| GPS | the one already in your quad, via Betaflight/INAV passthrough | bare GPS modules on the bench or in the field |
+| Good for | "is my build affected?", A/B-ing receivers or settings in the real quad | controlled experiments: several GPS at once with a control receiver, distances, shielding, long or unattended runs |
+| Electrical setup | laptop and quad share USB ground; the laptop itself is an RF source nearby | the receiver under test is powered on its own supply, nothing connected to it, and the Pi can sit away from it on Wi-Fi or its own hotspot. The only path to the GPS is radiated, which isolates the effect you're measuring |
+| Start | [Quick start](#quick-start-windows-laptop--flight-controller) | [Raspberry Pi setup](#raspberry-pi-setup) |
+
+Both give the same dashboard and logs:
 
 - **RF spectrum** (M10 only). The receiver's built-in spectrum analyser covers about 1520–1650 MHz, so you can see GPS L1, Galileo E1, BeiDou B1I and GLONASS L1. It has max-hold, a frozen **baseline** overlay, and a **Δ vs baseline** view.
 - **Per-satellite C/N0**, elevation, azimuth, used/not used, and per-signal detail, shown in a sky plot and a bar chart.
@@ -15,7 +27,30 @@ A Raspberry Pi tool for finding out whether an ELRS receiver (or VTX, camera, ES
 
 Every setting is written to the GPS's **RAM only**, so power-cycling it restores whatever your flight controller saved.
 
-## Wiring (Pi UART)
+## Quick start: Windows laptop + flight controller
+
+GPS Scope runs on Windows 10/11 and monitors the GPS **inside a built quad** through the flight controller's USB port, using Betaflight/INAV GPS passthrough. The GPS stays in its real position with the real receiver, ESCs and VTX around it.
+
+1. Install Python 3 from [python.org](https://www.python.org/downloads/) (tick *Add python.exe to PATH*).
+2. Download the **Windows zip** from [Releases](https://github.com/flyingbandit/GPS-Scope/releases) and unzip it.
+3. Plug the quad into the laptop by USB and **close Betaflight Configurator** (only one program can use the COM port). Power the quad from a battery if the GPS or receiver isn't powered from USB.
+4. Double-click **`start_windows.bat`**. The first run sets up Python packages. It finds the flight controller, switches it to GPS passthrough and opens the dashboard at `http://127.0.0.1:8080`.
+
+Options: `start_windows.bat --fc COM5` names the FC's port; `start_windows.bat --port COM7` uses a GPS on a USB-UART adapter instead. `python gpsscope.py --list-ports` lists the ports.
+
+Notes:
+- Passthrough lasts until the FC is power-cycled; unplug it to return to normal. GPS Scope's GPS settings are in RAM only, so the FC's own GPS setup comes back too.
+- Through the FC, NAV-SAT and NAV-SIG are sent every 5th fix, so everything fits the FC's GPS UART (57600 or 115200). The GPS's baud is never changed.
+- The ELRS receiver keeps sending its own telemetry during passthrough, so receiver interference tests work as normal.
+- Betaflight and INAV only. For ArduPilot, set `SERIAL_PASS1 = 0` and `SERIAL_PASS2` = the GPS's serial port, then use `start_windows.bat --port COMx`.
+- u-center on the same laptop can watch at the same time on `tcp://127.0.0.1:2101`.
+- The laptop and its USB cable are close to the GPS and share the quad's ground, so they are part of what you're measuring. Compare like with like (same cable, same laptop position), or use the Pi rig when you need to rule them out.
+
+## Raspberry Pi setup
+
+The Pi rig is the in-depth method: bare GPS modules on the Pi's UARTs, the device under test powered separately, and the Pi reachable over Wi-Fi so nothing else is wired into the setup.
+
+### Wiring (Pi UART)
 
 | GPS | Raspberry Pi |
 |---|---|
@@ -28,7 +63,7 @@ The Pi's GPIO is 3.3 V. Drone GPS modules output 3.3 V logic, so they're safe to
 
 Power the ELRS receiver from a **separate** 5 V supply (a BEC or USB power bank). It only needs power and to be bound to your radio. Don't connect its TX/RX to anything.
 
-## Install
+### Install
 
 On the Pi (Raspberry Pi OS Bookworm or later):
 
@@ -38,7 +73,7 @@ cd gpsscope && bash install.sh
 sudo reboot
 ```
 
-Or copy the folder over from a PC: `scp -r gpsscope pi@raspberrypi.local:~`, then run `install.sh` as above. Use your Pi's own user and hostname throughout.
+Or download the **Pi tar.gz** from [Releases](https://github.com/flyingbandit/GPS-Scope/releases) and run `tar xzf GPS-Scope-*-pi.tar.gz && cd gpsscope && bash install.sh`, or copy the folder over from a PC with `scp -r gpsscope pi@raspberrypi.local:~` and run `install.sh` as above. Use your Pi's own user and hostname throughout.
 
 Then open `http://raspberrypi.local:8080`. The installer sets GPS Scope up as a service, so it starts on every boot.
 
@@ -50,7 +85,7 @@ Join that network on your phone and open `http://10.42.0.1:8080`. Map tiles won'
 
 **Try it without hardware:** `python3 gpsscope.py --sim`. Use the *Sim: interference* button in the header to toggle a fake noisy receiver.
 
-## Test procedure
+### Test procedure
 
 1. Put the GPS outside with a clear sky, on something non-metallic, and leave it alone for **at least 5 minutes** so the satellite set and accuracy settle.
 2. **Set the reference position** with *Use 60 s average*. A position read off Google Maps is also fine.
@@ -63,24 +98,6 @@ Join that network on your phone and open `http://10.42.0.1:8080`. Map tiles won'
 5. Go back to the baseline at the end. If it doesn't match the first baseline, the sky changed under you and the comparison is less reliable.
 
 Satellites move, so compare runs taken close together, and only trust differences bigger than about 1–2 dB.
-
-## On a Windows laptop, through a flight controller
-
-GPS Scope also runs on Windows 10/11 and can monitor the GPS **inside a built quad** through the flight controller's USB port, using Betaflight/INAV GPS passthrough. The GPS stays in its real position with the real receiver, ESCs and VTX around it.
-
-1. Install Python 3 from python.org (tick *Add python.exe to PATH*).
-2. Download this repository (Code → Download ZIP) and unzip it.
-3. Plug the quad into the laptop by USB and **close Betaflight Configurator** (only one program can use the COM port). Power the quad from a battery if the GPS or receiver isn't powered from USB.
-4. Double-click **`start_windows.bat`**. The first run sets up Python packages. It finds the flight controller, switches it to GPS passthrough and opens the dashboard at `http://127.0.0.1:8080`.
-
-Options: `start_windows.bat --fc COM5` names the FC's port; `start_windows.bat --port COM7` uses a GPS on a USB-UART adapter instead. `python gpsscope.py --list-ports` lists the ports.
-
-Notes:
-- Passthrough lasts until the FC is power-cycled; unplug it to return to normal. GPS Scope's GPS settings are in RAM only, so the FC's own GPS setup comes back too.
-- Through the FC, NAV-SAT and NAV-SIG are sent every 5th fix, so everything fits the FC's GPS UART (57600 or 115200). The GPS's baud is never changed.
-- The ELRS receiver keeps sending its own telemetry during passthrough, so receiver interference tests work as normal.
-- Betaflight and INAV only. For ArduPilot, set `SERIAL_PASS1 = 0` and `SERIAL_PASS2` = the GPS's serial port, then use `start_windows.bat --port COMx`.
-- u-center on the same laptop can watch at the same time on `tcp://127.0.0.1:2101`.
 
 ## Several GPS at once
 
