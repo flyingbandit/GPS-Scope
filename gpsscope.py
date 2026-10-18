@@ -49,7 +49,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.4"
+GPSSCOPE_VERSION = "2026-10-18.5"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -977,7 +977,7 @@ class UbxRelay(threading.Thread):
         return ln == 0 and cls in self.POLL_CLASSES
 
     def _from_client(self, c):
-        buf = bytearray()
+        buf, logged = bytearray(), 0
         while True:
             try:
                 b = c.recv(4096)
@@ -998,8 +998,14 @@ class UbxRelay(threading.Thread):
             while True:                            # pull whole UBX frames out, skip anything else
                 i = buf.find(b"\xb5\x62")
                 if i < 0:
+                    if buf and logged < 40:
+                        logged += 1
+                        print(f"[{self.rid}] u-center sent {len(buf)} non-UBX bytes (dropped): {bytes(buf[:40])!r}", flush=True)
                     buf.clear()
                     break
+                if i and logged < 40:
+                    logged += 1
+                    print(f"[{self.rid}] u-center sent {i} non-UBX bytes (dropped): {bytes(buf[:min(i, 40)])!r}", flush=True)
                 del buf[:i]
                 if len(buf) < 6:
                     break
@@ -1011,7 +1017,12 @@ class UbxRelay(threading.Thread):
                     break
                 f = bytes(buf[:n])
                 del buf[:n]
-                if self._is_query(f):
+                ok = self._is_query(f)
+                if logged < 40:
+                    logged += 1
+                    print(f"[{self.rid}] u-center sent UBX {f[2]:02X}-{f[3]:02X} len {n - 8}: "
+                          f"{'passed' if ok else 'blocked'}", flush=True)
+                if ok:
                     try:
                         self.writer(f)
                     except Exception:  # noqa: BLE001
