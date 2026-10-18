@@ -49,7 +49,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.9"
+GPSSCOPE_VERSION = "2026-10-18.10"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -87,8 +87,9 @@ DROP_CNO_MIN = 28        # dB-Hz - ...if it was this strong
 DIP_DB = 8               # dB single-epoch C/N0 drop that counts as a dip
 MASS_DROP_N = 3          # sats lost in one epoch => RF event, not geometry
 HISTORY_SECONDS = 3600
-PGA_DB_PER_STEP = 2.0    # spectrum dB moved per PGA dB (measured ~2.1 on a real M10: 23 dB / 11 PGA)
-SPUR_DB = 20             # narrowband peak this far above baseline (gain-corrected) = spur event
+SPAN_DB_PER_LSB = 0.25   # UBX-MON-SPAN spectrum bytes are quarter-dB (u-blox: dB = value / 4)
+PGA_DB_PER_STEP = 0.5    # spectrum dB moved per PGA dB (measured ~0.52 on a real M10: 5.75 dB / 11 PGA)
+SPUR_DB = 5.0            # narrowband peak this far above baseline (gain-corrected) = spur event
 DROP_USED_MIN_S = 5      # a sat must have been in the fix this long...
 DROP_GONE_S = 3          # ...and out of it this long, before we call it a drop (no flapping)
 CNO_STEP_DB = 4          # strongest sats falling this much together = broadband/front-end event
@@ -350,7 +351,7 @@ class State:
         # Raw values are relative dB *after* the receiver's PGA. When a strong
         # signal appears the AGC lowers PGA gain, which pulls the whole trace down,
         # so the PGA value is shown and logged alongside (see README).
-        db = [int(v) for v in raw]
+        db = [v * SPAN_DB_PER_LSB for v in raw]   # quarter-dB bytes -> dB, as u-center shows them
         n = len(db)
         with self.lock:
             same = self.spec and self.spec["center"] == center and self.spec["span"] == span
@@ -398,7 +399,7 @@ class State:
         a = sp["db"]
         n0 = len(a)
         res = [a[i] - statistics.median(a[max(0, i - 8):i + 9]) for i in range(n0)]
-        self._spike_count = sum(1 for i in range(1, n0 - 1) if res[i] >= 20 and res[i] >= res[i - 1] and res[i] >= res[i + 1])
+        self._spike_count = sum(1 for i in range(1, n0 - 1) if res[i] >= SPUR_DB and res[i] >= res[i - 1] and res[i] >= res[i + 1])
         self._spec_recent.append(sp["db"])
         b = self.spec_baseline
         if not b or len(b["db"]) != len(sp["db"]) or len(self._spec_recent) < 3:
@@ -422,7 +423,7 @@ class State:
                 lo, hi = sp["f0"] + spikes[0] * sp["df"], sp["f0"] + spikes[-1] * sp["df"]
                 top = max(cur[i] for i in spikes)
                 ctxt = (f", comb pitch ~{comb:.2f} MHz (tentative; typical of an SMPS or spread-spectrum clock)") if comb else ""
-                self.event("spur", f"Wideband spur field: {len(spikes)} spurs {lo:.1f}-{hi:.1f} MHz, up to {top:.0f} dB "
+                self.event("spur", f"Wideband spur field: {len(spikes)} spurs {lo:.1f}-{hi:.1f} MHz, up to {top:.1f} dB "
                            f"above floor{ctxt}; non-stationary (hopping/pulsed). Covers L1/E1/B1I.",
                            "alert", {"spikes": len(spikes), "lo": round(lo, 2), "hi": round(hi, 2), "comb": comb})
             return
@@ -447,7 +448,7 @@ class State:
             self._spur_last[key] = sp["t"]
             near = min(BAND_MARKERS, key=lambda m: abs(m["f"] - f))
             inband = abs(f - 1575.42) < 6 or abs(f - 1561.1) < 4
-            self.event("spur", f"Narrowband spur {f:.2f} MHz, +{ex[k]:.0f} dB re local floor "
+            self.event("spur", f"Narrowband spur {f:.2f} MHz, +{ex[k]:.1f} dB re local floor "
                        f"({f - near['f']:+.2f} MHz from {near['name']}), absent in baseline",
                        "alert" if inband else "warn", {"f": round(f, 3), "db": round(ex[k], 1)})
 
@@ -1363,7 +1364,7 @@ class Simulator(threading.Thread):
                         ph = (f - comb_off) % 2.75
                         if min(ph, 2.75 - ph) < 0.07 or abs(((f - comb_off - 1.125) % 2.75)) < 0.07:
                             v += rnd.uniform(15, 45) * self.scale
-                    v -= PGA_DB_PER_STEP * (54 - pga)     # like the real M10: trace drops when gain is cut
+                    v -= PGA_DB_PER_STEP / SPAN_DB_PER_LSB * (54 - pga)   # sim works in raw quarter-dB bytes
                     spec.append(max(0, min(255, int(v))))
                 st.update_spectrum(0, spec, span, span // n, center, pga)
             time.sleep(1)

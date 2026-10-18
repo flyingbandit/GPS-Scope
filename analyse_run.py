@@ -32,11 +32,15 @@ def spikes_per_frame(path):
         return out
     with open(path) as f:
         rows = list(csv.reader(f))
+    # Runs before 2026-10-18.10 logged MON-SPAN as raw quarter-dB bytes (0-255); later ones log dB
+    # (value / 4, never above 63.75). Same 5 dB spur threshold either way.
+    raw = any(float(v) > 64 for r in rows[1:20] for v in r[5:])
+    k = 0.25 if raw else 1.0
     for r in rows[1:]:
-        a = [float(v) for v in r[5:]]
+        a = [float(v) * k for v in r[5:]]
         n = len(a)
         res = [a[i] - statistics.median(a[max(0, i - 8):i + 9]) for i in range(n)]
-        out[float(r[0])] = sum(1 for i in range(1, n - 1) if res[i] >= 20 and res[i] >= res[i - 1] and res[i] >= res[i + 1])
+        out[float(r[0])] = sum(1 for i in range(1, n - 1) if res[i] >= 5 and res[i] >= res[i - 1] and res[i] >= res[i + 1])
     return out
 
 

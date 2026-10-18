@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.9";
+const PAGE_VERSION = "2026-10-18.10";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -509,7 +509,7 @@ function drawSpectrum(){
   const n = sp.db.length, f = i => sp.f0 + i*sp.df;
   const diff = specMode==="diff" && sp.baseline;
   const gref = S.gain && S.gain.pgaRef!=null ? S.gain.pgaRef : sp.pga;
-  const K = (S.info && S.info.pgaK) || 2;                        // spectrum dB per PGA dB
+  const K = (S.info && S.info.pgaK) || 0.5;                      // spectrum dB per PGA dB
   const corr = specCorr ? K*(gref - sp.pga) : 0;                  // add back the gain the receiver took away
   const bcorr = specCorr && sp.baseline ? K*(gref - sp.baseline.pga) : 0;
   if (sp.t !== specRingT){ specRingT = sp.t; specRing.unshift(sp.db.map(v=>v+corr)); if (specRing.length > 5) specRing.pop(); }
@@ -520,7 +520,7 @@ function drawSpectrum(){
   if (diff){ cur = cur.map((v,i)=>v - base[i]); mx = mx.map((v,i)=>v - (bmx ? bmx[i] : base[i])); }   // peaks vs peaks
   const vals = diff ? cur.concat(mx) : cur.concat(mx, base||[], bmx||[]);
   let lo = Math.min(...vals), hi = Math.max(...vals);
-  if (diff){ const a = Math.max(6, Math.abs(lo), Math.abs(hi)); lo=-a; hi=a; } else { lo = Math.floor(lo-3); hi = Math.ceil(hi+3); }
+  if (diff){ const a = Math.max(2, Math.abs(lo), Math.abs(hi)); lo=-a; hi=a; } else { lo = Math.floor(lo-1); hi = Math.ceil(hi+1); }
   const L=40,R=10,T=18,B=26, X = i => L + (i/(n-1))*(w-L-R), Y = v => T + (1-(v-lo)/(hi-lo))*(h-T-B);
   // band shading
   for (const m of sp.markers){
@@ -535,7 +535,7 @@ function drawSpectrum(){
   for (const t of niceTicks(lo,hi,5)){ g.beginPath(); g.moveTo(L,Y(t)+.5); g.lineTo(w-R,Y(t)+.5); g.stroke(); g.fillText(t, L-6, Y(t)+4); }
   g.textAlign="center";
   for (const fr of niceTicks(f(0), f(n-1), Math.max(3, Math.floor(w/90)))){ const i = (fr-sp.f0)/sp.df; g.fillText(fr, X(i), h-8); }
-  g.textAlign="left"; g.fillText((diff ? "Δ dB re baseline" : "dB (rel.)") + (specCorr && corr ? ` · +${corr} dB PGA comp.` : ""), L+4, T+12);
+  g.textAlign="left"; g.fillText((diff ? "Δ dB re baseline" : "dB (rel.)") + (specCorr && corr ? ` · +${corr.toFixed(1)} dB PGA comp.` : ""), L+4, T+12);
   g.textAlign="right"; g.fillText("MHz", w-R, h-8);
   if (diff){   // the baseline IS the 0 line in this view - draw and label it, shade "louder" above
     g.fillStyle = css("--crit"); g.globalAlpha = .06; g.fillRect(L, T, w-L-R, Y(0)-T); g.globalAlpha = 1;
@@ -559,15 +559,15 @@ function drawSpectrum(){
     ${!diff && bmx ? `<span title="Loudest each frequency got during the baseline (${sp.baseline.frames||"?"} frames)"><i class="sw" style="background:repeating-linear-gradient(90deg,var(--muted) 0 2px,transparent 2px 5px)"></i>Baseline peak</span>` : ""}
     ${!diff && base ? `<span><i class="sw dash"></i>Baseline median · ${esc(sp.baseline.label)} ${hms(sp.baseline.t)}</span>`:""}
     ${sp.comb ? `<span>${statusBadge("crit", `comb · ${sp.comb} MHz pitch`)}</span>` : ""}
-    ${specCorr ? (S.gain && S.gain.pga != null && S.gain.pga <= 4 ? `<span>${statusBadge("warn", "PGA at minimum: compensation unreliable")}</span>` : `<span class="muted" title="Estimate only. The GPS lowers its own gain when interference arrives, which pulls the raw trace DOWN. Compensation adds that back (≈${(S.info&&S.info.pgaK)||2} dB per PGA dB).">PGA-compensated (estimate) ⓘ</span>`)
-      : (S.gain && S.gain.gainCut >= 2 ? `<span>${statusBadge("warn", `uncompensated: reads ${S.gain.gainCut * ((S.info&&S.info.pgaK)||2)} dB low (PGA −${S.gain.gainCut} dB)`)}</span>` : `<span class="muted">uncompensated (post-PGA)</span>`)}`;
+    ${specCorr ? (S.gain && S.gain.pga != null && S.gain.pga <= 4 ? `<span>${statusBadge("warn", "PGA at minimum: compensation unreliable")}</span>` : `<span class="muted" title="Estimate only. The GPS lowers its own gain when interference arrives, which pulls the raw trace DOWN. Compensation adds that back (≈${(S.info&&S.info.pgaK)||0.5} dB per PGA dB).">PGA-compensated (estimate) ⓘ</span>`)
+      : (S.gain && S.gain.gainCut >= 2 ? `<span>${statusBadge("warn", `uncompensated: reads ${(S.gain.gainCut * ((S.info&&S.info.pgaK)||0.5)).toFixed(1)} dB low (PGA −${S.gain.gainCut} dB)`)}</span>` : `<span class="muted">uncompensated (post-PGA)</span>`)}`;
   specCv._geom = {L,R,n,w,cur,mx,base,bmx,f,diff};
 }
 bindHover(specCv, (x)=>{
   const gm = specCv._geom; if (!gm) return null;
   const i = Math.round((x-gm.L)/(gm.w-gm.L-gm.R)*(gm.n-1)); if (i<0||i>=gm.n) return null;
-  let s = `<b>${gm.f(i).toFixed(2)} MHz</b><div class="row"><i class="sw" style="background:${css("--accent")}"></i>${gm.diff?"Δ live":"Live"} ${gm.cur[i]} dB</div>
-    <div class="row"><i class="sw" style="background:${css("--gal")}"></i>Max ${gm.mx[i]} dB</div>`;
+  let s = `<b>${gm.f(i).toFixed(2)} MHz</b><div class="row"><i class="sw" style="background:${css("--accent")}"></i>${gm.diff?"Δ live":"Live"} ${(+gm.cur[i]).toFixed(2)} dB</div>
+    <div class="row"><i class="sw" style="background:${css("--gal")}"></i>Max ${(+gm.mx[i]).toFixed(2)} dB</div>`;
   if (gm.base && !gm.diff) s += `<div class="row"><i class="sw" style="background:${css("--muted")}"></i>Baseline typical ${(+gm.base[i]).toFixed(1)} dB</div>`;
   if (gm.bmx && !gm.diff) s += `<div class="row"><i class="sw" style="background:${css("--muted")}"></i>Baseline loudest ${(+gm.bmx[i]).toFixed(1)} dB</div>`;
   return s;
@@ -589,7 +589,7 @@ function wfPush(){
 }
 function wfColor(x){ // sequential: surface -> blue -> deep, 0..30 dB above row median
   const dark = getComputedStyle(document.documentElement).colorScheme === "dark";
-  const u = Math.max(0, Math.min(1, x/30));
+  const u = Math.max(0, Math.min(1, x/7.5));   // 0..7.5 dB above the sweep median
   const a = dark ? [26,26,25] : [252,252,251], m = dark ? [57,135,229] : [42,120,214], z = dark ? [205,226,251] : [13,54,107];
   const lerp = (p,q,k)=>p.map((c,i)=>Math.round(c+(q[i]-c)*k));
   return u < .5 ? lerp(a,m,u*2) : lerp(m,z,(u-.5)*2);
@@ -618,7 +618,7 @@ function renderPga(){
   if (!sp){ el.innerHTML=""; return; }
   const g = S.gain||{}, cut = g.gainCut||0;
   let peak = "";
-  if (sp.baseline && sp.baseline.max){ const K = (S.info && S.info.pgaK) || 2, gref = g.pgaRef!=null ? g.pgaRef : sp.pga;
+  if (sp.baseline && sp.baseline.max){ const K = (S.info && S.info.pgaK) || 0.5, gref = g.pgaRef!=null ? g.pgaRef : sp.pga;
     const c = specCorr ? K*(gref - sp.pga) : 0, bc = specCorr ? K*(gref - sp.baseline.pga) : 0;
     const d = sp.max.map((v,i)=> (v + c) - (sp.baseline.max[i] + bc)).sort((a,b)=>a-b);
     const med = d[d.length>>1], top = d[d.length-1];
@@ -1197,11 +1197,13 @@ function renderAna(){
 function showVersion(sv){ const el = $("#verTag"); if (!el) return;
   // The page is served no-store, so a mismatch is never the browser cache: either the Pi has a newer
   // index.html than the program running (GPS Scope wasn't restarted) or the other way round.
+  const older = (a, b) => { const x = a.split(/[.-]/).map(Number), y = b.split(/[.-]/).map(Number);
+    for (let i = 0; i < Math.max(x.length, y.length); i++){ const d = (x[i]||0) - (y[i]||0); if (d) return d < 0; } return false; };
   const msg = !sv ? "server version unknown" : sv === PAGE_VERSION ? `v${sv}`
-    : sv < PAGE_VERSION ? `page v${PAGE_VERSION} · running v${sv} - GPS Scope needs a restart`
+    : older(sv, PAGE_VERSION) ? `page v${PAGE_VERSION} · running v${sv} - GPS Scope needs a restart`
     : `server v${sv} · page v${PAGE_VERSION} - press Ctrl+F5`;
   el.textContent = msg;
-  el.title = sv && sv < PAGE_VERSION ? "Run update.ps1 again, or: ssh -t <pi> \"sudo systemctl restart gpsscope\"" : "";
+  el.title = sv && older(sv, PAGE_VERSION) ? "Run update.ps1 again, or: ssh -t <pi> \"sudo systemctl restart gpsscope\"" : "";
   el.style.color = sv === PAGE_VERSION ? "" : "var(--crit)"; }
 /* ---------------- receivers: tab bar, overview, spec ---------------- */
 const RXC = ["--gps","--gal","--bds","--glo","--sbas","--qzss","--navic","--crit"];   // fixed order per receiver
