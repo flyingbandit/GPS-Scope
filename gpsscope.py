@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.11"
+GPSSCOPE_VERSION = "2026-10-18.12"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -1091,6 +1091,8 @@ class Receiver(threading.Thread):
         super().__init__(daemon=True, name=f"rx-{st.rid}")
         self.st, self.port, self.baud = st, port, baud
         self.decimate = max(1, int(decimate))   # NAV-SAT/NAV-SIG every Nth epoch (FC passthrough)
+        self.via_fc = False                     # GPS behind a flight controller: re-enter passthrough on reconnect
+        self.fc_auto = False                    # ...and re-find the FC's port if it changes (--fc auto)
         self.target_baud, self.keep_nmea = target_baud, keep_nmea
         self.ser = None
         self.relay = None            # UbxRelay, set by the Hub
@@ -1132,6 +1134,16 @@ class Receiver(threading.Thread):
         return s
 
     def connect(self):
+        if self.via_fc:
+            # An FC that was unplugged or reset has rebooted out of passthrough: switch it back first.
+            if self.fc_auto and IS_WIN and self.port.upper() not in {p.device.upper() for p in list_serial_ports()}:
+                new = find_fc_port()
+                if new and new.upper() != self.port.upper():
+                    self.log(f"flight controller moved {self.port} -> {new}")
+                    self.port = new
+            self.log(f"waiting for flight controller on {self.port}")
+            fc_passthrough(self.port, log=lambda m: self.log(m.replace("[fc] ", "")))
+            time.sleep(0.5)
         self.log(f"opening {self.port}")
         bauds = ([self.baud] if self.baud else []) + [b for b in self.BAUDS if b != self.baud]
         for b in bauds:
@@ -1655,6 +1667,8 @@ class Hub:
         st.rxthread = Receiver(st, dev, baud, None if via_fc else (self.set_baud or None), self.keep_nmea,
                                decimate=5 if via_fc else 1)
         if via_fc:
+            st.rxthread.via_fc = True
+            st.rxthread.fc_auto = via_fc == "auto"
             with st.lock:
                 st.info["via_fc"] = True
         if self.ubx_tcp_base:
@@ -2121,9 +2135,7 @@ def main():
             if not fc:
                 raise SystemExit("No flight controller found on USB. Plug it in, close Betaflight Configurator, "
                                  "or name the port: --fc COM5  (python gpsscope.py --list-ports shows them)")
-            fc_passthrough(fc)
-            time.sleep(0.5)
-            hub.start_receiver(fc, baud=115200, via_fc=True)
+            hub.start_receiver(fc, baud=115200, via_fc="auto" if a.fc.lower() == "auto" else True)
         for dev in a.port:
             hub.start_receiver(dev, baud=a.baud or None)
         if (not (a.port or a.fc) or a.scan) and not a.no_scan and not (IS_WIN and not a.scan):
