@@ -42,9 +42,23 @@ Notes:
 - Passthrough lasts until the FC is power-cycled; unplug it to return to normal. GPS Scope's GPS settings are in RAM only, so the FC's own GPS setup comes back too.
 - Through the FC, NAV-SAT and NAV-SIG are sent every 5th fix, so everything fits the FC's GPS UART (57600 or 115200). The GPS's baud is never changed.
 - The ELRS receiver keeps sending its own telemetry during passthrough, so receiver interference tests work as normal.
-- Betaflight and INAV only. For ArduPilot, set `SERIAL_PASS1 = 0` and `SERIAL_PASS2` = the GPS's serial port, then use `start_windows.bat --port COMx`.
+- Automatic passthrough is Betaflight and INAV only. For ArduPilot, see below.
 - u-center on the same laptop can watch at the same time on `tcp://127.0.0.1:2101`.
 - The laptop and its USB cable are close to the GPS and share the quad's ground, so they are part of what you're measuring. Compare like with like (same cable, same laptop position), or use the Pi rig when you need to rule them out.
+
+### ArduPilot (manual passthrough, untested)
+
+ArduPilot sets up passthrough with parameters rather than a CLI command, so do it by hand:
+
+1. In Mission Planner or QGroundControl, set:
+   - `SERIAL_PASS1 = 0` (USB)
+   - `SERIAL_PASS2` = the GPS's serial port number (e.g. `3` if the GPS is on SERIAL3)
+   - `SERIAL_PASSTIMO = 0`. Otherwise passthrough stops after 15 s without data from the USB side, and GPS Scope rarely writes to the GPS.
+   - optionally `GPS_AUTO_CONFIG = 0` while testing, so ArduPilot doesn't reconfigure the GPS's messages
+2. Close Mission Planner/QGC so the COM port is free.
+3. Run `start_windows.bat --port COM5` (the FC's port).
+
+Afterwards set `SERIAL_PASS2 = -1` and `GPS_AUTO_CONFIG = 1` again. Passthrough doesn't run while armed, and MAVLink over USB is unavailable while it's on.
 
 ## Raspberry Pi setup
 
