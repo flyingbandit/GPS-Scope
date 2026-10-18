@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.6";
+const PAGE_VERSION = "2026-10-18.7";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1017,6 +1017,8 @@ function drawMultiWiring(){
 }
 let PI = "pi@" + (location.hostname || "raspberrypi.local");   // replaced by the Pi's own user@host from /api/version
 fetch("/api/version").then(r=>r.json()).then(v=>{ if (v.ssh){ PI = v.ssh; if ($("#cmd0")) drawCommands(); } }).catch(()=>{});
+// u-center 2 can't resolve mDNS .local names, but Windows finds the bare hostname (or use the IP)
+function ucHost(){ const h = location.hostname || PI.split("@")[1]; return h.endsWith(".local") ? h.slice(0, -6) : h; }
 const cmds = () => [
   ["Update the Pi (run on your PC, in the folder that holds update.ps1)",
    "powershell -ExecutionPolicy Bypass -File .\\update.ps1",
@@ -1026,8 +1028,8 @@ const cmds = () => [
   ["List the serial ports / UARTs", `ssh ${PI} "grep -E '^(dtoverlay|enable_uart)' /boot/firmware/config.txt; ls -l /dev/serial* /dev/ttyAMA* /dev/ttyUSB* /dev/ttyACM* 2>/dev/null"`, ""],
   ["Copy all runs to your PC", `scp -r ${PI}:~/gpsscope/runs .`, "Lands in a 'runs' folder wherever you run it."],
   ["Watch a GPS live in u-center (while GPS Scope keeps logging)",
-   `tcp://${PI.split("@")[1]}:2101`,
-   "In u-center: Receiver > Connection > Network connection, enter this address. GPS1 is :2101, GPS2 :2102 and so on (shown on each receiver card). u-center can query the GPS but can't change its settings. Every run also saves raw.ubx per receiver, which u-center opens with File > Open."],
+   `tcp://${ucHost()}:2101`,
+   "In u-center 2: Add data source > TCP, enter this address (bare hostname or IP: u-center 2 can't look up .local names). GPS1 is :2101, GPS2 :2102 and so on (shown on each receiver card). u-center can query the GPS but can't change its settings. Every run also saves raw.ubx per receiver, which u-center opens with File > Open."],
   ["Stop typing the password (one-off, makes an SSH key)",
    `ssh-keygen -t ed25519 -N "" -f %USERPROFILE%\\.ssh\\id_ed25519
 type %USERPROFILE%\\.ssh\\id_ed25519.pub | ssh ${PI} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`,
@@ -1241,7 +1243,7 @@ function renderOvCards(){
     return `<div class="rxcard" style="border-left:4px solid ${rxColor(r.id)}">
       <h3><span class="dot ${ok?"ok":"bad"}"></span>${esc(r.meta.name||r.id)} <span class="pill ${esc(r.meta.role)}">${esc(r.meta.role)}</span>${r.inRun?' <span class="rec" title="in run"></span>':""}</h3>
       <div class="spec">${specLine(r.meta)}</div>
-      <div class="muted" style="font-size:11.5px">${esc(r.port||"")} · ${esc(r.info.model||"?")} ${r.info.fw?`fw ${esc(r.info.fw)}`:""}${r.info.uniqid?` · chip ${esc(r.info.uniqid)}`:""}${r.info.ubx_tcp?` · <span title="Open in u-center: Receiver > Connection > Network connection > tcp://${esc(location.hostname)}:${r.info.ubx_tcp}. Read-only unless GPS Scope runs with --ubx-tcp-write.">u-center tcp://${esc(location.hostname)}:${r.info.ubx_tcp}</span>`:""}${ok?"":` · ${esc(r.info.status||"")}`}</div>
+      <div class="muted" style="font-size:11.5px">${esc(r.port||"")} · ${esc(r.info.model||"?")} ${r.info.fw?`fw ${esc(r.info.fw)}`:""}${r.info.uniqid?` · chip ${esc(r.info.uniqid)}`:""}${r.info.ubx_tcp?` · <span title="u-center 2: Add data source > TCP > this address. Use the bare hostname (or the IP): u-center 2 can't look up .local names. u-center can query the GPS but not change it.">u-center tcp://${esc(ucHost())}:${r.info.ubx_tcp}</span>`:""}${ok?"":` · ${esc(r.info.status||"")}`}</div>
       ${r.meta.chip_changed ? statusBadge("warn","Different chip on this port than last time - check the spec") : ""}
       <div class="mini">
         <div><div class="k">Fix · SVs</div><div class="v">${esc(r.fix||"–")} <small>${n.used ?? "–"}</small></div></div>
