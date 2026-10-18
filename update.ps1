@@ -17,7 +17,7 @@ ssh $Pi "mkdir -p ~/gpsscope/static && chmod -R u+rwX ~/gpsscope"
 if ($LASTEXITCODE -ne 0) { throw "ssh failed - is the Pi on and is '$Pi' right?" }
 
 Write-Host "2/4  Copying files" -ForegroundColor Cyan
-$files = @("gpsscope.py","analysis.py","analyse_run.py","share.py","README.md","install.sh","requirements.txt") | ForEach-Object { Join-Path $here $_ }
+$files = @("gpsscope.py","analysis.py","analyse_run.py","share.py","README.md","install.sh","requirements.txt","ubxpeek.py") | ForEach-Object { Join-Path $here $_ }
 scp @files "${Pi}:~/gpsscope/"
 if ($LASTEXITCODE -ne 0) { throw "copying the program files failed" }
 scp (Join-Path $here "static\index.html") "${Pi}:~/gpsscope/static/"

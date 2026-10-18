@@ -90,6 +90,8 @@ Each receiver runs at 10 Hz, so a Pi 4 or 5 comfortably handles several. On a Pi
 
 Each GPS also streams its raw UBX data on a TCP port while GPS Scope keeps logging: GPS1 on **2101**, GPS2 on **2102**, and so on. The port is shown on each receiver card. In **u-center 2**, add a TCP data source (Ctrl+T) and enter `tcp://raspberrypi:2101`: use the Pi's bare hostname or its IP address, because u-center 2 can't look up `.local` names. In u-center classic it's *Receiver → Connection → Network connection*. The relay is **read-only** for settings: u-center's queries (MON-VER, polls, CFG-VALGET) reach the GPS so it can identify the receiver, but anything that would change it, such as CFG-VALSET, saving config or a reset, is discarded. Start GPS Scope with `--ubx-tcp-write` if you want u-center to configure it, or `--ubx-tcp 0` to turn the relay off.
 
+To check what a relay port is sending, run `python3 ubxpeek.py 2101` on the Pi: it counts each UBX message type for 5 seconds.
+
 Every run also saves `raw.ubx` in each receiver's folder: the GPS's own byte stream for the whole run. u-center opens it with *File → Open* and can play it back, so anyone can step through a run in u-center's own panes. `raw.ubx` holds real positions, so it is left out of the **Share** export.
 
 ## Phases and run analysis
@@ -141,6 +143,7 @@ The M8 has no spectrum analyser. It still reports the jamming indicator, AGC and
 | `analysis.py` | Phase analysis used by the UI and the CLI. |
 | `analyse_run.py` | Re-analyse a recorded run from the command line. |
 | `share.py` | Makes the anonymised **Share** copy of a run. |
+| `ubxpeek.py` | Counts the UBX messages on a u-center relay port. |
 | `install.sh` | Pi installer: packages, UARTs, systemd service. |
 | `update.ps1` | Push an update from a Windows PC to the Pi. |
 
