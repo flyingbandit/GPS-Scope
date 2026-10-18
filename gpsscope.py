@@ -49,7 +49,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-18.5"
+GPSSCOPE_VERSION = "2026-10-18.6"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -948,9 +948,15 @@ class UbxRelay(threading.Thread):
         super().__init__(daemon=True, name=f"ubxtcp-{rid}")
         self.port, self.rid, self.writer, self.allow_write = port, rid, writer, allow_write
         self.clients, self.lock = {}, threading.Lock()      # socket -> deque of pending bytes
-        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.srv.bind(("0.0.0.0", port))
+        try:                                   # IPv4 + IPv6: Windows apps often try a .local name's IPv6 first
+            self.srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.srv.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            self.srv.bind(("::", port))
+        except OSError:
+            self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.srv.bind(("0.0.0.0", port))
         self.srv.listen(4)
 
     def run(self):
@@ -965,7 +971,8 @@ class UbxRelay(threading.Thread):
             q, ev = collections.deque(), threading.Event()
             with self.lock:
                 self.clients[c] = (q, ev)
-            print(f"[{self.rid}] u-center connected from {addr[0]} (tcp :{self.port}, "
+            who = addr[0][7:] if addr[0].startswith("::ffff:") else addr[0]
+            print(f"[{self.rid}] u-center connected from {who} (tcp :{self.port}, "
                   f"{'read/write' if self.allow_write else 'read-only, polls passed'})", flush=True)
             threading.Thread(target=self._to_client, args=(c, q, ev, addr[0]), daemon=True).start()
             threading.Thread(target=self._from_client, args=(c,), daemon=True).start()
