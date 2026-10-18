@@ -1,0 +1,33 @@
+# Builds the Windows and Raspberry Pi downloads and publishes a GitHub release
+# whenever a tag like v2026.10.18 is pushed.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build packages
+        run: |
+          VER=$(grep -m1 -oP 'GPSSCOPE_VERSION = "\K[^"]+' gpsscope.py)
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          mkdir -p dist
+          # Windows: launcher and PowerShell script need CRLF line endings
+          git archive --prefix=GPS-Scope/ HEAD | tar x -C dist
+          (cd dist/GPS-Scope && rm -rf .github .gitattributes .gitignore && sed -i 's/\r$//; s/$/\r/' start_windows.bat update.ps1)
+          (cd dist && zip -qrX "GPS-Scope-$VER-windows.zip" GPS-Scope && rm -rf GPS-Scope)
+          # Raspberry Pi: LF line endings, executable scripts, folder named gpsscope
+          git archive --prefix=gpsscope/ HEAD | tar x -C dist
+          (cd dist/gpsscope && rm -rf .github .gitattributes start_windows.bat && chmod +x install.sh gpsscope.py)
+          (cd dist && tar czf "GPS-Scope-$VER-pi.tar.gz" gpsscope && rm -rf gpsscope)
+          ls -l dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "GPS Scope $VER" --notes-file .github/RELEASE_NOTES.md
