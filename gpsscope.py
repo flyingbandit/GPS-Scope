@@ -131,7 +131,7 @@ AGC_DROP_ALERT_PCT = 10  # M8 (no PGA): AGC this far below reference
 GAIN_REF_WINDOW = 600    # samples kept for the baseline median
 BASE_REF_EVERY_S = 10    # s - outside a run / during Baseline the reference position updates this often
 REF_MIN_S = 30           # s - outside a run the reference follows the median of recent CLEAN fixes over a window
-REF_MAX_S = 600          #     sized from lock quality: REF_MIN_S at hAcc 0.3 m, growing with hAcc^2, capped here
+REF_MAX_S = 600          #     sized from lock quality: REF_MIN_S at hAcc 0.3 m, growing in proportion to hAcc, capped here
 CLEAN_HOLD_S = 15        # s - after any interference sign, fixes aren't trusted for the reference for this long
 GAIN_SETTLE_S = 60       # ignore the front end's gain for this long after (re)connecting: it starts high and settles
 GAIN_REF_CHUNK = 10      # auto reference = highest median of this many consecutive samples (one odd frame can't set it)
@@ -480,7 +480,7 @@ class State:
         if len(pts) < 5 or not accs:
             return None
         hm = statistics.median(accs)
-        win = int(min(REF_MAX_S, max(REF_MIN_S, REF_MIN_S * (hm / 0.3) ** 2)))
+        win = int(min(REF_MAX_S, max(REF_MIN_S, REF_MIN_S * hm / 0.3)))
         use = [p for p in pts if p[0] >= t - win]
         lim = max(2.0, 1.5 * hm)
         good = [p for p in use if p[5] is None or p[5] <= lim]
