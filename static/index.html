@@ -281,7 +281,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <dialog id="wireDlg">
   <div class="dlghead">
     <h2>Wiring</h2>
-    <span class="seg" id="wireMode"><button data-w="uart" class="on">Pi UART (GPIO)</button><button data-w="usb">USB-UART adapter</button><button data-w="multi">Multi-UART</button><button data-w="cmds">Commands</button></span>
+    <span class="seg" id="wireMode"><button data-w="uart" class="on">Pi UART (GPIO)</button><button data-w="usb">USB-UART adapter</button><button data-w="multi">Several GPS</button><button data-w="cmds">Commands</button></span>
     <button class="btn sm" id="wireClose" style="margin-left:auto">Close</button>
   </div>
   <div id="wireStatus" class="warnline"></div>
@@ -399,7 +399,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-18.12";
+const PAGE_VERSION = "2026-10-30.1";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -999,20 +999,87 @@ const WIRE = {
 };
 const PINS = {1:"3V3",2:"5V",3:"GPIO2",4:"5V",5:"GPIO3",6:"GND",7:"GPIO4",8:"GPIO14 TXD",9:"GND",10:"GPIO15 RXD",11:"GPIO17",12:"GPIO18",13:"GPIO27",14:"GND",15:"GPIO22",16:"GPIO23",17:"3V3",18:"GPIO24",19:"GPIO10",20:"GND"};
 let wireMode = "uart";
+let multiN = 2;
+const PINS40 = {1:"3V3",2:"5V",3:"GPIO2",4:"5V",5:"GPIO3",6:"GND",7:"GPIO4",8:"GPIO14",9:"GND",10:"GPIO15",11:"GPIO17",12:"GPIO18",
+  13:"GPIO27",14:"GND",15:"GPIO22",16:"GPIO23",17:"3V3",18:"GPIO24",19:"GPIO10",20:"GND",21:"GPIO9",22:"GPIO25",23:"GPIO11",24:"GPIO8",
+  25:"GND",26:"GPIO7",27:"GPIO0",28:"GPIO1",29:"GPIO5",30:"GND",31:"GPIO6",32:"GPIO12",33:"GPIO13",34:"GND",35:"GPIO19",36:"GPIO16",
+  37:"GPIO26",38:"GPIO20",39:"GND",40:"GPIO21"};
+// GPS n -> [uart name, Pi TX pin (to GPS RX), Pi RX pin (from GPS TX), GND pin, Pi 4 overlay, Pi 5 overlay]
+const MULTI_UARTS = [["UART0", 8, 10, 6, "on by default (serial0)", "on by default (serial0)"],
+  ["UART2 (Pi 5: UART1)", 27, 28, 9, "dtoverlay=uart2", "dtoverlay=uart1-pi5"],
+  ["UART3 (Pi 5: UART2)", 7, 29, 14, "dtoverlay=uart3", "dtoverlay=uart2-pi5"],
+  ["UART4 (Pi 5: UART3)", 24, 21, 20, "dtoverlay=uart4", "dtoverlay=uart3-pi5"],
+  ["UART5 (Pi 5: UART4)", 32, 33, 25, "dtoverlay=uart5", "dtoverlay=uart4-pi5"]];
 function drawMultiWiring(){
-  const rows = [["UART0","GPIO14 (pin 8)","GPIO15 (pin 10)","on by default (serial0)","on by default (serial0)"],
-    ["UART1 / UART2","GPIO0 (pin 27)","GPIO1 (pin 28)","dtoverlay=uart2","dtoverlay=uart1-pi5"],
-    ["UART2 / UART3","GPIO4 (pin 7)","GPIO5 (pin 29)","dtoverlay=uart3","dtoverlay=uart2-pi5"],
-    ["UART3 / UART4","GPIO8 (pin 24)","GPIO9 (pin 21)","dtoverlay=uart4","dtoverlay=uart3-pi5"],
-    ["UART4 / UART5","GPIO12 (pin 32)","GPIO13 (pin 33)","dtoverlay=uart5","dtoverlay=uart4-pi5"]];
-  $("#wireSvg").innerHTML = `<div class="tablewrap" style="max-height:none"><table>
-    <thead><tr><th>#</th><th>Pi TX → GPS RX</th><th>Pi RX ← GPS TX</th><th>Pi 4 config.txt</th><th>Pi 5 config.txt</th></tr></thead>
-    <tbody>${rows.map((r,i)=>`<tr><td><b>GPS ${i+1}</b> <span class="muted">${r[0]}</span></td><td>${r[1]}</td><td>${r[2]}</td><td><code>${r[3]}</code></td><td><code>${r[4]}</code></td></tr>`).join("")}</tbody></table></div>
-    <div class="note" style="margin-top:8px">Every GPS also needs <b>5 V</b> (pins 2 and 4) and its own <b>GND</b> (pins 6, 9, 14, 20, 25, 30, 34 and 39). Pi 3 / Zero 2 W: only GPS 1 is reliable, so add more through USB-UART adapters. Beyond 5, use USB-UART adapters on a <b>powered</b> USB hub. Each GPS is found automatically; label each port with <b>Spec</b>.</div>`;
-  $("#wireNotes").innerHTML = [["Pins 27/28 (GPIO0/1)","These are the HAT ID pins. Fine to use when no HAT is fitted."],
-    ["After editing config.txt","Reboot. The UARTs appear as /dev/ttyAMA1… and GPS Scope listens on each."],
-    ["Which receiver is which","Each GPS gets a tab named after its port. Set its product, antenna and distance from the RX with Spec."],
-    ["Control GPS","Put one GPS well away from the RX and mark it Control. The comparison subtracts its changes, removing the sky's effect."]]
+  const n = multiN, U = MULTI_UARTS.slice(0, n);
+  const pitch = 18, boxH = 104, gap = 18;
+  const H = Math.max(470, 70 + n*(boxH+gap) + 40), W = 1040;
+  const px = 150, py = Math.round((H - 20*pitch)/2) + 10;            // header pin (1) position
+  const pinXY = k => ({x: px + ((k-1)%2)*pitch, y: py + Math.floor((k-1)/2)*pitch});
+  const o = [];
+  o.push(`<rect class="w-pcb" x="20" y="${py-58}" width="300" height="${20*pitch+104}" rx="14"/>`);
+  o.push(`<text class="w-tw" x="36" y="${py-32}">Raspberry Pi 4 / 5 · 40-pin header</text><text class="w-tw2" x="36" y="${py-16}">viewed from above, USB/Ethernet ports facing down</text>`);
+  o.push(`<rect x="${px-14}" y="${py-14}" width="${pitch+28}" height="${20*pitch+10}" rx="4" fill="#111"/>`);
+  // which pins are used, by what
+  const wires = [];   // {pin, gpsIdx, pad, cls}
+  U.forEach((u,i)=>{
+    wires.push({pin: i%2 ? 4 : 2, g:i, pad:"VCC", cls:"w-pv"});
+    wires.push({pin: u[3], g:i, pad:"GND", cls:"w-gnd"});
+    wires.push({pin: u[2], g:i, pad:"TX",  cls:"w-tx"});    // GPS TX -> Pi RX
+    wires.push({pin: u[1], g:i, pad:"RX",  cls:"w-rx"});    // GPS RX <- Pi TX
+  });
+  const used = new Set(wires.map(w=>w.pin));
+  for (let k=1;k<=40;k++){
+    const {x,y} = pinXY(k), on = used.has(k);
+    o.push(`<rect x="${x-5}" y="${y-5}" width="10" height="10" rx="${k===1?0:5}" fill="${on?"#f2c94c":"#9a9a92"}" ${on?`stroke="#fff" stroke-width="1.5"`:""}/>`);
+    const label = `${k} ${PINS40[k]}`;
+    if (k%2) o.push(`<text class="w-tw2" x="${x-12}" y="${y+4}" text-anchor="end" opacity="${on?1:.55}">${label}</text>`);
+    else if (!on) o.push(`<text class="w-tw2" x="${x+14}" y="${y+4}" opacity=".55">${label}</text>`);
+  }
+  o.push(`<text class="w-tw2" x="36" y="${py+20*pitch+28}">Pin 1 = square pad, at the SD-card end of the header.</text>`);
+  // GPS boards
+  const gx = 760, gw = 250, top0 = Math.round((H - n*(boxH+gap) + gap)/2);
+  const pads = {};
+  U.forEach((u,i)=>{
+    const gy = top0 + i*(boxH+gap);
+    o.push(`<rect class="w-gpsboard" x="${gx}" y="${gy}" width="${gw}" height="${boxH}" rx="12"/>`);
+    o.push(`<rect x="${gx+gw-78}" y="${gy+18}" width="62" height="62" rx="8" fill="#c9b58a"/><rect x="${gx+gw-62}" y="${gy+34}" width="30" height="30" rx="4" fill="#b29a63"/>`);
+    o.push(`<text class="w-tw" x="${gx+70}" y="${gy+22}">GPS ${i+1}</text><text class="w-tw2" x="${gx+70}" y="${gy+38}">${u[0].split(" ")[0]}</text>`);
+    ["VCC","GND","TX","RX"].forEach((p,j)=>{ const x = gx+16, y = gy+20 + j*22;
+      o.push(`<rect x="${x-6}" y="${y-6}" width="12" height="12" rx="3" fill="#f2c94c"/><text class="w-tw2" x="${x+12}" y="${y+4}">${p}</text>`);
+      pads[i+":"+p] = {x, y}; });
+  });
+  // 3+ GPS: draw power and ground as labelled stubs, so only the data lines cross the page
+  const stubs = n > 2 ? wires.filter(w => w.pad === "VCC" || w.pad === "GND") : [];
+  stubs.forEach(w => { const b = pads[w.g+":"+w.pad], a = pinXY(w.pin);
+    o.push(`<g class="${w.cls}"><path class="w-wire" d="M${b.x} ${b.y} H${b.x-34}" style="stroke-width:2.6"/><circle class="w-dotc" cx="${b.x}" cy="${b.y}" r="4.5"/></g>`);
+    o.push(`<text class="w-t2" x="${b.x-40}" y="${b.y+4}" text-anchor="end">${w.pad === "VCC" ? "5 V" : "GND"} · pin ${w.pin}</text>`);
+    o.push(`<g class="${w.cls}"><circle class="w-dotc" cx="${a.x}" cy="${a.y}" r="4.5"/></g>`); });
+  if (stubs.length) wires.splice(0, wires.length, ...wires.filter(w => !stubs.includes(w)));
+  // wires: each gets its own vertical channel so none overlap
+  const chans = wires.length, x0 = 360, x1 = 720, step = Math.min(18, (x1-x0)/Math.max(1,chans-1));
+  wires.forEach((w,k)=>{
+    const a = pinXY(w.pin), b = pads[w.g+":"+w.pad], cx = x0 + k*step;
+    const lead = (w.pin%2) ? `M${a.x} ${a.y} V${a.y + (a.y < b.y ? pitch/2 : -pitch/2)} H${px+pitch+12} ` : `M${a.x} ${a.y} H${px+pitch+12} `;
+    o.push(`<g class="${w.cls}"><path class="w-wire" d="${lead}H${cx} V${b.y} H${b.x}" style="stroke-width:2.6"/><circle class="w-dotc" cx="${a.x}" cy="${a.y}" r="4.5"/><circle class="w-dotc" cx="${b.x}" cy="${b.y}" r="4.5"/></g>`);
+  });
+  // legend
+  [["w-pv","5 V (pins 2 and 4)"],["w-gnd","GND (any GND pin)"],["w-tx","GPS TX → Pi RX"],["w-rx","GPS RX ← Pi TX"]].forEach(([c,t],i)=>{
+    const y = 22 + i*0, x = 360 + i*150;
+    o.push(`<g class="${c}"><line class="w-wire" x1="${x}" y1="${y}" x2="${x+26}" y2="${y}"/></g><text class="w-t" x="${x+32}" y="${y+4}">${t}</text>`); });
+  const pick = [2,3,4,5].map(k=>`<button data-n="${k}" class="${k===n?"on":""}">${k} GPS</button>`).join("");
+  $("#wireSvg").innerHTML = `<div style="margin-bottom:8px"><span class="seg" id="multiN">${pick}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Wiring diagram for ${n} GPS modules on separate Raspberry Pi UARTs">${o.join("")}</svg>
+    <div class="tablewrap" style="max-height:none;margin-top:10px"><table>
+    <thead><tr><th>#</th><th>GPS TX → Pi RX</th><th>GPS RX ← Pi TX</th><th>5 V</th><th>GND</th><th>Pi 4 config.txt</th><th>Pi 5 config.txt</th></tr></thead>
+    <tbody>${U.map((u,i)=>`<tr><td><b>GPS ${i+1}</b> <span class="muted">${u[0]}</span></td><td>pin ${u[2]} (${PINS40[u[2]]})</td><td>pin ${u[1]} (${PINS40[u[1]]})</td><td>pin ${i%2 ? 4 : 2}${i > 1 ? " (shared)" : ""}</td><td>pin ${u[3]}</td><td><code>${u[4]}</code></td><td><code>${u[5]}</code></td></tr>`).join("")}</tbody></table></div>`;
+  $("#multiN").onclick = e => { const b = e.target.closest("button"); if (!b) return; multiN = +b.dataset.n; drawWiring(); };
+  $("#wireNotes").innerHTML = [
+    ["Power", n > 2 ? "The header has only two 5 V pins (2 and 4). For 3+ GPS, join the extra 5 V leads to them with a splice or a small power strip, or feed the GPS from a separate 5 V supply with its GND joined to the Pi's." : "GPS 1 takes 5 V from pin 2, GPS 2 from pin 4. Each GPS gets its own GND pin."],
+    ["Enable the UARTs", "Run <code>GPS_UARTS=" + n + " bash install.sh</code> (it adds the dtoverlay lines), then reboot. Each GPS is found automatically and gets its own tab."],
+    ["Pins 27/28 (GPIO0/1)", "These are the HAT ID pins. Fine to use when no HAT is fitted."],
+    ["Control GPS", "Put one GPS well away from the RX and mark it Control in Spec. The comparison subtracts its changes, removing the sky's effect."],
+    ["Pi 3 / Zero 2 W", "Only GPS 1 is reliable on these. Add more GPS through USB-UART adapters (a powered hub beyond a few)."]]
     .map(([t,d])=>`<div class="note"><b>${t}</b><br>${d}</div>`).join("");
 }
 let PI = "pi@" + (location.hostname || "raspberrypi.local");   // replaced by the Pi's own user@host from /api/version

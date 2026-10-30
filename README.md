@@ -115,6 +115,19 @@ Satellites move, so compare runs taken close together, and only trust difference
 
 ## Several GPS at once
 
+![Two GPS on a Raspberry Pi: GPS 1 on UART0 (pins 8/10), GPS 2 on UART2 (pins 27/28)](docs/wiring-2-gps.png)
+
+| GPS | GPS TX → Pi RX | GPS RX ← Pi TX | 5 V | GND | Pi 4 `config.txt` | Pi 5 `config.txt` |
+|---|---|---|---|---|---|---|
+| 1 | pin 10 (GPIO15) | pin 8 (GPIO14) | pin 2 | pin 6 | on by default | on by default |
+| 2 | pin 28 (GPIO1) | pin 27 (GPIO0) | pin 4 | pin 9 | `dtoverlay=uart2` | `dtoverlay=uart1-pi5` |
+| 3 | pin 29 (GPIO5) | pin 7 (GPIO4) | shared | pin 14 | `dtoverlay=uart3` | `dtoverlay=uart2-pi5` |
+| 4 | pin 21 (GPIO9) | pin 24 (GPIO8) | shared | pin 20 | `dtoverlay=uart4` | `dtoverlay=uart3-pi5` |
+| 5 | pin 33 (GPIO13) | pin 32 (GPIO12) | shared | pin 25 | `dtoverlay=uart5` | `dtoverlay=uart4-pi5` |
+
+The header has only two 5 V pins, so from 3 GPS up join the extra 5 V leads (or use a separate 5 V supply with its GND joined to the Pi's). `GPS_UARTS=N bash install.sh` adds the `dtoverlay` lines. The dashboard's **Wiring → Several GPS** draws the same for 2–5 GPS.
+
+
 GPS Scope finds every u-blox receiver on its own:
 - the Pi's GPIO UARTs (`/dev/serial0` and `/dev/ttyAMA*`)
 - USB-UART adapters (`/dev/ttyUSB*`, `/dev/ttyACM*`)
