@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.6"
+GPSSCOPE_VERSION = "2026-10-30.7"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -146,6 +146,59 @@ def write_json(path, obj, **kw):
         except OSError:
             pass
     os.replace(tmp, path)
+
+
+NET_HELPER = "/usr/local/sbin/gpsscope-wifi"   # installed by netsetup.sh
+
+
+def _cmd(args, timeout=5):
+    import subprocess
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def net_status(remote=None):
+    """The Pi's Ethernet / Wi-Fi state, and which interface this browser is reaching us through."""
+    import shutil
+    if IS_WIN or not shutil.which("nmcli"):
+        return {"available": False, "why": "Network control needs a Pi running NetworkManager."}
+    devs = []
+    _, out, _ = _cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev"])
+    for line in out.splitlines():
+        f = [x.replace("\\:", ":") for x in re.split(r"(?<!\\):", line)] + ["", "", "", ""]
+        dev, typ, state, con = f[:4]
+        if typ not in ("ethernet", "wifi"):
+            continue
+        d = {"dev": dev, "type": typ, "state": state, "con": con, "ip": None}
+        _, o, _ = _cmd(["ip", "-4", "-o", "addr", "show", dev])
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", o)
+        d["ip"] = m.group(1) if m else None
+        if typ == "wifi":
+            _, o, _ = _cmd(["iw", "dev", dev, "info"])
+            m = re.search(r"channel (\d+) \((\d+) MHz", o)
+            if m:
+                d["channel"], d["mhz"] = int(m.group(1)), int(m.group(2))
+            m = re.search(r"\btype (\w+)", o)
+            d["mode"] = {"AP": "hotspot", "managed": "client"}.get(m.group(1), m.group(1)) if m else None
+            m = re.search(r"\bssid (.+)", o)
+            d["ssid"] = m.group(1).strip() if m else None
+        devs.append(d)
+    _, radio, _ = _cmd(["nmcli", "radio", "wifi"])
+    via = None
+    if remote in ("127.0.0.1", "::1"):
+        via = "local"
+    elif remote:
+        _, o, _ = _cmd(["ip", "route", "get", remote])
+        m = re.search(r"\bdev (\S+)", o)
+        via = m.group(1) if m else None
+    ctl = os.path.exists(NET_HELPER) and _cmd(["sudo", "-n", NET_HELPER, "status"])[0] == 0
+    eth_up = any(d["type"] == "ethernet" and d["ip"] for d in devs)
+    via_wifi = bool(via) and any(d["dev"] == via and d["type"] == "wifi" for d in devs)
+    return {"available": True, "devices": devs, "wifiRadio": radio, "via": via, "viaWifi": via_wifi,
+            "ethUp": eth_up, "control": ctl, "canWifiOff": ctl and eth_up and not via_wifi and radio == "enabled"}
 
 
 def read_json(path, default=None):
@@ -2036,6 +2089,28 @@ def make_app(hub: Hub) -> Flask:
         except Exception:
             user = "pi"
         return jsonify({"version": GPSSCOPE_VERSION, "ssh": f"{user}@{socket.gethostname()}.local"})
+
+    @app.get("/api/net")
+    def net():
+        return jsonify(net_status(request.remote_addr))
+
+    @app.post("/api/net/wifi")
+    def net_wifi():
+        b = request.get_json(force=True, silent=True) or {}
+        st = net_status(request.remote_addr)
+        if not st.get("available") or not st.get("control"):
+            return jsonify({"ok": False, "error": "Wi-Fi control isn't set up - run: bash netsetup.sh"}), 400
+        if b.get("on"):
+            rc, o, e = _cmd(["sudo", "-n", NET_HELPER, "on"], timeout=120)
+        else:
+            if st["viaWifi"]:
+                return jsonify({"ok": False, "error": "You're connected over Wi-Fi - switching it off would cut you off. "
+                                                     "Connect through Ethernet first."}), 400
+            if not st["ethUp"]:
+                return jsonify({"ok": False, "error": "Ethernet has no address - plug the Pi into your router first."}), 400
+            rc, o, e = _cmd(["sudo", "-n", NET_HELPER, "off"])
+        print(f"[net] Wi-Fi {'on' if b.get('on') else 'off'} requested from {request.remote_addr}: rc={rc} {e}", flush=True)
+        return jsonify({"ok": rc == 0, "error": e or o if rc else None, "net": net_status(request.remote_addr)})
 
     @app.get("/api/receivers")
     def receivers():

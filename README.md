@@ -93,9 +93,17 @@ Then open `http://raspberrypi.local:8080`. The installer sets GPS Scope up as a 
 
 **Updating from a Windows PC:** `powershell -ExecutionPolicy Bypass -File .\update.ps1 -Pi pi@raspberrypi.local` copies the files, restarts the service and prints the running version. Put `user@host` in `pi-target.txt` next to the script to make that the default. The **Commands** panel in the UI lists the other handy one-liners, already filled in with your Pi's address.
 
-**In the field with no Wi-Fi**, make the Pi its own hotspot:
-`sudo nmcli dev wifi hotspot ssid GPSScope password gpsscope123`.
-Join that network on your phone and open `http://10.42.0.1:8080`. Map tiles won't load without internet, but everything else works, including the drift plot.
+**In the field with no Wi-Fi**, make the Pi start its own hotspot at every boot. Run this once on the Pi:
+
+```bash
+cd ~/gpsscope && bash netsetup.sh
+```
+
+Join the **GPSScope** network (password `gpsscope123`, or reuses a hotspot you already made) and open `http://10.42.0.1:8080`. Map tiles won't load without internet, but everything else works, including the drift plot.
+
+**Ethernet works alongside the hotspot.** Plug the Pi into your router and open `http://<hostname>.local:8080` from your home network. The **Network** button then shows both links and can switch **Wi-Fi off until the next reboot**. That's worth doing for 2.4 GHz ELRS tests: the Pi's Wi-Fi shares the band with ELRS 2.4, so the dashboard link can drop out, and it's one less transmitter next to the GPS. The switch refuses if you're connected over Wi-Fi, so you can't lock yourself out, and the hotspot comes back on every boot.
+
+Options: `HOTSPOT_SSID=… HOTSPOT_PASS=…` for a new hotspot's name and password; `HOTSPOT_BAND=a WIFI_COUNTRY=GB` (your country code) for a 5 GHz hotspot on a Pi 3B+/4/5, away from ELRS 2.4. Undo with `sudo systemctl disable --now gpsscope-net; sudo rm /etc/sudoers.d/gpsscope-net`.
 
 **Try it without hardware:** `python3 gpsscope.py --sim`. Use the *Sim: interference* button in the header to toggle a fake noisy receiver.
 
@@ -221,6 +229,7 @@ The M8 has no spectrum analyser. It still reports the jamming indicator, AGC and
 | `share.py` | Makes the anonymised **Share** copy of a run. |
 | `ubxpeek.py` | Counts the UBX messages on a u-center relay port. |
 | `install.sh` | Pi installer: packages, UARTs, systemd service. |
+| `netsetup.sh` | Optional Pi network setup: hotspot at every boot, Ethernet alongside, Wi-Fi switch in the dashboard. |
 | `update.ps1` | Push an update from a Windows PC to the Pi. |
 | `start_windows.bat` | Run GPS Scope on a Windows laptop, via FC passthrough or a USB-UART GPS. |
 

@@ -25,7 +25,7 @@ jobs:
           (cd dist && zip -qrX "GPS-Scope-$VER-windows.zip" GPS-Scope && rm -rf GPS-Scope)
           # Raspberry Pi: LF line endings, executable scripts, folder named gpsscope
           git archive --prefix=gpsscope/ HEAD | tar x -C dist
-          (cd dist/gpsscope && rm -rf .github .gitattributes start_windows.bat && chmod +x install.sh gpsscope.py)
+          (cd dist/gpsscope && rm -rf .github .gitattributes start_windows.bat && chmod +x install.sh netsetup.sh gpsscope.py)
           (cd dist && tar czf "GPS-Scope-$VER-pi.tar.gz" gpsscope && rm -rf gpsscope)
           ls -l dist
       - name: Publish release

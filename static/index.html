@@ -238,6 +238,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
   <button class="btn sm" id="specBtn" title="Describe the GPS on this port">Spec</button>
   <button class="btn sm" id="wireBtn" title="How to connect the GPS to the Pi">Wiring</button>
   <button class="btn sm" id="cmdBtn" title="Copy-paste commands for updating and checking the Pi">Commands</button>
+  <button class="btn sm" id="netBtn" title="The Pi's Ethernet and Wi-Fi - switch Wi-Fi off when you're on Ethernet">Network</button>
   <button class="btn sm" id="themeBtn" title="Toggle theme">Theme</button>
 </header>
 
@@ -292,7 +293,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <dialog id="wireDlg">
   <div class="dlghead">
     <h2>Wiring</h2>
-    <span class="seg" id="wireMode"><button data-w="uart" class="on">Pi UART (GPIO)</button><button data-w="usb">USB-UART adapter</button><button data-w="multi">Several GPS</button><button data-w="cmds">Commands</button></span>
+    <span class="seg" id="wireMode"><button data-w="uart" class="on">Pi UART (GPIO)</button><button data-w="usb">USB-UART adapter</button><button data-w="multi">Several GPS</button><button data-w="cmds">Commands</button><button data-w="net">Network</button></span>
     <button class="btn sm" id="wireClose" style="margin-left:auto">Close</button>
   </div>
   <div id="wireStatus" class="warnline"></div>
@@ -410,7 +411,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-30.6";
+const PAGE_VERSION = "2026-10-30.7";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1117,6 +1118,9 @@ const cmds = () => [
    `ssh-keygen -t ed25519 -N "" -f %USERPROFILE%\\.ssh\\id_ed25519
 type %USERPROFILE%\\.ssh\\id_ed25519.pub | ssh ${PI} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`,
    "Two lines, for Command Prompt. Skip the first if you already have a key. After this, ssh and scp stop asking for the password."],
+  ["Hotspot at every boot + Wi-Fi switch in the dashboard (one-off)",
+   `ssh -t ${PI} "cd ~/gpsscope && bash netsetup.sh"`,
+   "The Pi starts its hotspot on every boot and Ethernet works alongside it. On Ethernet, the Network button can switch Wi-Fi off until the next reboot. 5 GHz hotspot instead: put HOTSPOT_BAND=a WIFI_COUNTRY=GB before bash (Pi 3B+/4/5)."],
   ["Restart without the sudo password (one-off)",
    `ssh -t ${PI} "echo '${PI.split("@")[0]} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gpsscope' | sudo tee /etc/sudoers.d/gpsscope && sudo chmod 440 /etc/sudoers.d/gpsscope"`,
    "Only this one restart command skips the password - everything else still asks."],
@@ -1142,9 +1146,43 @@ function copyText(t, btn){
   fallback();
 }
 $("#wireSvg").addEventListener("click", e => { const b = e.target.closest("[data-copy]"); if (b) copyText(cmds()[+b.dataset.copy][1], b); });
+let netLast = 0, netBusy = false;
+async function drawNet(force){
+  if (netBusy || (!force && Date.now() - netLast < 3000)) return;
+  netLast = Date.now();
+  let n; try { n = await fetch("/api/net").then(r=>r.json()); } catch(e){ $("#wireStatus").innerHTML = statusBadge("crit","Can't reach the Pi"); return; }
+  if (wireMode !== "net") return;
+  $("#wireNotes").innerHTML = "";
+  if (!n.available){ $("#wireStatus").innerHTML = statusBadge("none", n.why || "Not available"); $("#wireSvg").innerHTML = ""; return; }
+  const eth = n.devices.filter(d=>d.type==="ethernet"), wifi = n.devices.filter(d=>d.type==="wifi");
+  const band = d => d.mhz ? (d.mhz >= 5000 ? `5 GHz, ch ${d.channel}` : `2.4 GHz, ch ${d.channel}`) : "";
+  const row = (name, ok, main, sub, here) => `<div class="note" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+    ${statusBadge(ok ? "good" : "none", name)}<div style="flex:1"><b>${esc(main)}</b>${here?` <span class="muted">· you're connected through this</span>`:""}<br><span class="muted">${esc(sub)}</span></div></div>`;
+  let h = "";
+  for (const d of eth) h += row("Ethernet", !!d.ip, d.ip ? `${d.ip}` : "Not connected",
+    d.ip ? `Open http://${d.ip}:8080 or http://${PI.split("@")[1]}:8080 from your home network` : "Plug the Pi into your router to use it alongside or instead of Wi-Fi", n.via === d.dev);
+  if (n.wifiRadio !== "enabled") h += row("Wi-Fi", false, "Off", "Comes back on (with the hotspot) at the next reboot, or press Wi-Fi on below", false);
+  else for (const d of wifi) h += row("Wi-Fi", /^connected/.test(d.state), d.mode === "hotspot" ? `Hotspot "${d.ssid||d.con}" · ${d.ip||""}` : d.ssid ? `Joined "${d.ssid}" · ${d.ip||""}` : d.state,
+    [band(d), d.mhz && d.mhz < 5000 ? "shares 2.4 GHz with ELRS 2.4, so the link can drop during 2.4 tests" : ""].filter(Boolean).join(" - "), n.via === d.dev);
+  let btns = "";
+  if (!n.control) btns = `<div class="muted" style="font-size:12px">To switch Wi-Fi from here and start the hotspot at every boot, run once on the Pi: <code>cd ~/gpsscope &amp;&amp; bash netsetup.sh</code></div>`;
+  else if (n.wifiRadio === "enabled") btns = `<button class="btn danger" id="wifiOff" ${n.canWifiOff?"":"disabled"}>Wi-Fi off until reboot</button>
+      <span class="muted" style="font-size:12px;margin-left:8px">${n.canWifiOff ? "Takes the Pi's own transmitter out of the test. The hotspot returns at the next reboot." : !n.ethUp ? "Plug in Ethernet first." : "You're on Wi-Fi - open this page through Ethernet to switch it off."}</span>`;
+  else btns = `<button class="btn primary" id="wifiOn">Wi-Fi on</button><span class="muted" style="font-size:12px;margin-left:8px">Turns the radio back on and starts the hotspot.</span>`;
+  $("#wireSvg").innerHTML = h + `<div style="margin-top:6px" id="netBtns">${btns}</div><div id="netMsg" class="warnline"></div>`;
+  $("#wireStatus").innerHTML = statusBadge(n.ethUp ? "good" : "none", n.ethUp ? "Ethernet connected" : "Ethernet not connected");
+  const act = async on => { netBusy = true; $("#netMsg").innerHTML = `<span class="muted">${on ? "Starting Wi-Fi and the hotspot (up to a minute)…" : "Switching Wi-Fi off…"}</span>`;
+    let r; try { r = await fetch("/api/net/wifi", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({on})}).then(x=>x.json()); } catch(e){ r = {ok:false, error:"No answer from the Pi"}; }
+    netBusy = false; await drawNet(true);
+    $("#netMsg").innerHTML = r.ok ? statusBadge("good", on ? "Wi-Fi on" : "Wi-Fi off until the next reboot") : statusBadge("crit", r.error || "Failed"); };
+  if ($("#wifiOff")) $("#wifiOff").onclick = () => act(false);
+  if ($("#wifiOn")) $("#wifiOn").onclick = () => act(true);
+}
+$("#netBtn").onclick = () => { wireMode = "net"; [...$("#wireMode").children].forEach(x=>x.classList.toggle("on", x.dataset.w==="net")); drawNet(true); $("#wireDlg").showModal(); };
 $("#cmdBtn").onclick = () => { wireMode = "cmds"; [...$("#wireMode").children].forEach(x=>x.classList.toggle("on", x.dataset.w==="cmds")); drawWiring(); $("#wireDlg").showModal(); };
 function drawWiring(){
   if (wireMode === "cmds"){ drawCommands(); return; }
+  if (wireMode === "net"){ drawNet(); return; }
   if (wireMode === "multi"){ drawMultiWiring(); }
   if (wireMode === "multi"){ const ok = (ovData ? ovData.receivers : rxList.map(r=>({info:{status:r.status}, port:r.port}))).filter(r=>/stream/.test(r.info.status||""));
     $("#wireStatus").innerHTML = ok.length ? statusBadge("good", `${ok.length} receiver${ok.length>1?"s":""} streaming: ${ok.map(r=>esc(r.port)).join(", ")}`) : statusBadge("crit", "No receiver detected yet"); return; }

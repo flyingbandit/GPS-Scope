@@ -17,14 +17,14 @@ ssh $Pi "mkdir -p ~/gpsscope/static && chmod -R u+rwX ~/gpsscope"
 if ($LASTEXITCODE -ne 0) { throw "ssh failed - is the Pi on and is '$Pi' right?" }
 
 Write-Host "2/4  Copying files" -ForegroundColor Cyan
-$files = @("gpsscope.py","analysis.py","analyse_run.py","share.py","README.md","install.sh","requirements.txt","ubxpeek.py") | ForEach-Object { Join-Path $here $_ }
+$files = @("gpsscope.py","analysis.py","analyse_run.py","share.py","README.md","install.sh","netsetup.sh","requirements.txt","ubxpeek.py") | ForEach-Object { Join-Path $here $_ }
 scp @files "${Pi}:~/gpsscope/"
 if ($LASTEXITCODE -ne 0) { throw "copying the program files failed" }
 scp (Join-Path $here "static\index.html") "${Pi}:~/gpsscope/static/"
 if ($LASTEXITCODE -ne 0) { throw "copying index.html failed" }
 
 Write-Host "3/4  Restarting GPS Scope (asks for the Pi password for sudo)" -ForegroundColor Cyan
-ssh -t $Pi "chmod -R u+rwX ~/gpsscope && sed -i 's/\r$//' ~/gpsscope/install.sh && sudo systemctl restart gpsscope"
+ssh -t $Pi "chmod -R u+rwX ~/gpsscope && sed -i 's/\r$//' ~/gpsscope/install.sh ~/gpsscope/netsetup.sh && sudo systemctl restart gpsscope"
 if ($LASTEXITCODE -ne 0) { Write-Host "     The restart failed (wrong sudo password?). Run this script again." -ForegroundColor Red }
 
 Write-Host "4/4  Checking the version that is actually running" -ForegroundColor Cyan
