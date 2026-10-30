@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.2"
+GPSSCOPE_VERSION = "2026-10-30.3"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -1295,8 +1295,12 @@ class Receiver(threading.Thread):
 
     def apply_gnss(self, preset, save=False):
         p = GNSS_PRESETS[preset]
-        layers = 7 if save else 1                   # RAM, or RAM + BBR + flash
-        self.send(UBXMessage.config_set(layers, 0, p["cfg"]))
+        # One message per layer: a VALSET naming a layer the module lacks (most drone M10s have no flash)
+        # is refused as a whole, so RAM goes first on its own and the saves are best-effort.
+        self.send(UBXMessage.config_set(1, 0, p["cfg"]))          # RAM: takes effect now
+        if save:
+            self.send(UBXMessage.config_set(2, 0, p["cfg"]))      # BBR: kept while the backup supply holds
+            self.send(UBXMessage.config_set(4, 0, p["cfg"]))      # flash, if the module has any
         time.sleep(1.0)                             # the receiver restarts its GNSS engine
         self.poll_signals()
 
@@ -1908,7 +1912,7 @@ def make_app(hub: Hub) -> Flask:
             return jsonify({"ok": False, "error": "receiver not connected"}), 409
         rx.apply_gnss(preset, save)
         st.event("gnss", f"Constellations set: {GNSS_PRESETS[preset]['label']}"
-                         f"{' (saved to GPS flash)' if save else ' (RAM only, until power-off)'}", "info")
+                         f"{' (also saved to backup RAM / flash)' if save else ' (RAM only, until power-off)'}", "info")
         return jsonify({"ok": True})
 
     # ---- per-receiver live state ----

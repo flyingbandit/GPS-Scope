@@ -278,7 +278,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
     <div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <select id="gnssPreset" style="flex:1;min-width:220px"></select>
         <button class="btn sm" id="gnssSend" type="button">Send to GPS</button></div>
-      <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" id="gnssSave" style="width:auto"> Keep after power-off (save to the GPS's flash)</label>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" id="gnssSave" style="width:auto"> Try to keep after power-off (backup RAM / flash)</label>
       <div class="muted" id="gnssNote" style="font-size:12px;margin-top:4px"></div></div>
   </form>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
@@ -406,7 +406,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-30.2";
+const PAGE_VERSION = "2026-10-30.3";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1423,7 +1423,7 @@ async function loadGnssPresets(){
 }
 function gnssNote(){ const v = gnssPresets && gnssPresets[$("#gnssPreset").value]; if (!v) return;
   $("#gnssNote").innerHTML = esc(v.note) + ($("#gnssSave").checked
-    ? " <b>Saved to flash:</b> survives power-off, but a flight controller may still set its own constellations at boot (set them in the FC's GPS settings too)."
+    ? " <b>Saved</b> to the GPS's backup RAM, and to flash if it has any. Most drone M10s have no flash, so it lasts only while the GPS's backup battery/supercap is charged. A flight controller may also set its own constellations at boot, so set them in the FC's GPS settings too."
     : " RAM only: gone at the next power-off, so the FC's own setup comes back."); }
 $("#gnssPreset").onchange = gnssNote; $("#gnssSave").onchange = gnssNote;
 $("#gnssSend").onclick = async () => {

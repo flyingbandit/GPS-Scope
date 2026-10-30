@@ -158,7 +158,7 @@ Each receiver runs at 10 Hz, so a Pi 4 or 5 comfortably handles several. On a Pi
 | **UK / Europe, faster** | GPS + Galileo + GLONASS, EGNOS | 6 / 16 Hz |
 | u-blox default | GPS + Galileo + BeiDou B1I, QZSS, SBAS | 3 / 12 Hz |
 
-The M10 tracks up to four systems at once, and BeiDou B1I can't run alongside GLONASS, so the four-system preset uses B1C. GLONASS's orbits favour high latitudes like the UK; QZSS only covers Asia-Pacific. By default the change is RAM-only and is gone at the next power-off. Tick *Keep after power-off* to save it to the GPS's flash, but note that Betaflight/INAV/ArduPilot may set their own constellations at boot, so set them in the FC's GPS settings as well. The dialog shows which systems are currently on. The GPS restarts tracking when you send a preset, so expect a few seconds of lower C/N0 (logged as an event).
+The M10 tracks up to four systems at once, and BeiDou B1I can't run alongside GLONASS, so the four-system preset uses B1C. GLONASS's orbits favour high latitudes like the UK; QZSS only covers Asia-Pacific. By default the change is RAM-only and is gone at the next power-off. Tick *Try to keep after power-off* to also save it to the GPS's backup RAM and flash. Most drone M10 modules have no flash, so it then lasts only while the module's backup battery or supercap holds. Also note that Betaflight/INAV/ArduPilot may set their own constellations at boot, so set them in the FC's GPS settings as well. The dialog shows which systems are currently on. The GPS restarts tracking when you send a preset, so expect a few seconds of lower C/N0 (logged as an event).
 
 ## Live view in u-center
 
