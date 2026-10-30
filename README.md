@@ -21,7 +21,7 @@ Both give the same dashboard and logs:
 - **Per-satellite C/N0**, elevation, azimuth, used/not used, and per-signal detail, shown in a sky plot and a bar chart.
 - **Per-constellation signal strength over time**, with alerts and your markers drawn on the chart.
 - **Receiver front end**: jamming indicator, AGC, noise, PGA gain, and L1 in-band power, each on its own small chart.
-- **Position drift**: a reference point is set automatically (median of good fixes; refined at the end of the Baseline phase), and the UI shows how far the reported fix wanders, with alerts above a threshold. With several GPS, the Overview plots where each one thinks it is and how far apart they are.
+- **Position drift**: a reference point is set automatically (median of good fixes). During a run's Baseline phase it follows that phase, updating every 10 s, and it's fixed when the next phase starts, and the UI shows how far the reported fix wanders, with alerts above a threshold. With several GPS, the Overview plots where each one thinks it is and how far apart they are.
 - **Events**: satellite losses (unexpected ones above 20° flagged separately), mass dropouts, simultaneous C/N0 dips, jamming state, fix changes and drift.
 - **Labelled test runs** logged to CSV, plus a comparison table with Δ against your baseline run.
 
@@ -110,7 +110,7 @@ Options: `HOTSPOT_SSID=… HOTSPOT_PASS=…` for a new hotspot's name and passwo
 ### Test procedure
 
 1. Put the GPS outside with a clear sky, on something non-metallic, and leave it alone for **at least 5 minutes** so the satellite set and accuracy settle.
-2. **Set the reference position** with *Use 60 s average*. A position read off Google Maps is also fine.
+2. **Reference position:** nothing to do. The Baseline phase of each run sets it. *Use 60 s average* sets it straight away if you want it before a run.
 3. With the ELRS RX unpowered, start a run labelled *Baseline* and press **Capture baseline** on the spectrum. Record about 2 minutes.
 4. Change **one thing**, start a new run, and record 2 minutes. Repeat for each condition, for example:
    - RX powered but unbound, then bound with telemetry 1:2, then telemetry off

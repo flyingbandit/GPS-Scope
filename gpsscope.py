@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.8"
+GPSSCOPE_VERSION = "2026-10-30.9"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -129,6 +129,7 @@ CNO_STEP_DB = 4          # strongest sats falling this much together = broadband
 GAIN_CUT_ALERT_DB = 3    # PGA this far below reference = strong in-band energy
 AGC_DROP_ALERT_PCT = 10  # M8 (no PGA): AGC this far below reference
 GAIN_REF_WINDOW = 600    # samples kept for the baseline median
+BASE_REF_EVERY_S = 10    # s - during a Baseline phase the reference position updates this often
 GAIN_SETTLE_S = 60       # ignore the front end's gain for this long after (re)connecting: it starts high and settles
 GAIN_REF_CHUNK = 10      # auto reference = highest median of this many consecutive samples (one odd frame can't set it)
 # The auto reference never expires while the GPS stays connected: a 10-min window let long interference become "normal".
@@ -268,6 +269,7 @@ class State:
         self._spike_count = None
         self.spec_hist = collections.deque(maxlen=600)   # waterfall on page load + phase baselines (10 min)
         self.phase_name, self.phase_start = None, now()
+        self._base_upd = 0.0            # last live update of the reference during a Baseline phase
         self.spec_max_label = "(since start)"
         self._prev_sats: dict = {}
         self.pos_hist = collections.deque(maxlen=6000)  # (t, lat, lon, alt, fixType, hAcc) - 10 min at 10 Hz
@@ -359,15 +361,16 @@ class State:
         except (OSError, ValueError):
             pass
 
-    def set_ref(self, ref, thresh=None):
+    def set_ref(self, ref, thresh=None, quiet=False):
         with self.lock:
             self.ref = ref
             if thresh:
                 self.drift_thresh = float(thresh)
-            self.trail.clear()
-            self.drifting = False
+            if not quiet:                # quiet = a live Baseline refinement: keep the plot and the log tidy
+                self.trail.clear()
+                self.drifting = False
             write_json(self._ref_path(), {"ref": self.ref, "thresh": self.drift_thresh})
-            if ref:
+            if ref and not quiet:
                 self.event("ref", f"Reference position set ({ref['source']}): "
                            f"{ref['lat']:.7f}, {ref['lon']:.7f} - alert above {self.drift_thresh} m")
 
@@ -411,6 +414,16 @@ class State:
         if pvt["fixType"] not in (3, 4) or (pvt.get("hAcc") or 99) > 10:
             return
         t = now()
+        # During a run's Baseline phase the reference follows that phase: median of its fixes, every 10 s
+        if self.run and self.phase_name and self.phase_name.lower().startswith("base"):
+            if t - self.phase_start >= BASE_REF_EVERY_S and t - self._base_upd >= BASE_REF_EVERY_S:
+                self._base_upd = t
+                r = self.avg_position(since=self.phase_start)
+                if r:
+                    first = not str((self.ref or {}).get("source", "")).startswith("Baseline phase")
+                    r["source"] = f"Baseline phase so far, median of {r['n']} fixes (updates every {BASE_REF_EVERY_S} s)"
+                    self.set_ref(r, quiet=not first)
+            return
         if self.ref:
             lat0 = self.ref["lat"]
             d = math.hypot((pvt["lat"] - lat0) * 111_320.0,
@@ -876,6 +889,7 @@ class State:
                 r["source"] = f"Baseline phase median, {r['n']} fixes"
                 self.set_ref(r)
         self.phase_name, self.phase_start = name, now()
+        self._base_upd = 0.0
         self.reset_max(f"({name})")
 
     # -- snapshot for the UI ---------------------------------------------
