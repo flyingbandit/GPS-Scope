@@ -148,6 +148,18 @@ It finds them by **listening only**. It holds the DTR/RTS lines low so ESP32 boa
 
 Each receiver runs at 10 Hz, so a Pi 4 or 5 comfortably handles several. On a Pi 3, expect about 3.
 
+## Constellation presets (M10)
+
+**Spec → Set constellations** sends a constellation setup to a u-blox M10 (directly, or through the FC in passthrough):
+
+| Preset | Systems | Max fix rate (default / high-performance) |
+|---|---|---|
+| **UK / Europe** | GPS + Galileo + GLONASS + BeiDou B1C, SBAS limited to EGNOS, QZSS off | 4 / 10 Hz |
+| **UK / Europe, faster** | GPS + Galileo + GLONASS, EGNOS | 6 / 16 Hz |
+| u-blox default | GPS + Galileo + BeiDou B1I, QZSS, SBAS | 3 / 12 Hz |
+
+The M10 tracks up to four systems at once, and BeiDou B1I can't run alongside GLONASS, so the four-system preset uses B1C. GLONASS's orbits favour high latitudes like the UK; QZSS only covers Asia-Pacific. By default the change is RAM-only and is gone at the next power-off. Tick *Keep after power-off* to save it to the GPS's flash, but note that Betaflight/INAV/ArduPilot may set their own constellations at boot, so set them in the FC's GPS settings as well. The dialog shows which systems are currently on. The GPS restarts tracking when you send a preset, so expect a few seconds of lower C/N0 (logged as an event).
+
 ## Live view in u-center
 
 Each GPS also streams its raw UBX data on a TCP port while GPS Scope keeps logging: GPS1 on **2101**, GPS2 on **2102**, and so on. The port is shown on each receiver card. In **u-center 2**, add a TCP data source (Ctrl+T) and enter `tcp://raspberrypi:2101`: use the Pi's bare hostname or its IP address, because u-center 2 can't look up `.local` names. In u-center classic it's *Receiver → Connection → Network connection*. The relay is **read-only** for settings: u-center's queries (MON-VER, polls, CFG-VALGET) reach the GPS so it can identify the receiver, but anything that would change it, such as CFG-VALSET, saving config or a reset, is discarded. Start GPS Scope with `--ubx-tcp-write` if you want u-center to configure it, or `--ubx-tcp 0` to turn the relay off.

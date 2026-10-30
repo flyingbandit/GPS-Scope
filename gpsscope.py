@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.1"
+GPSSCOPE_VERSION = "2026-10-30.2"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -91,6 +91,34 @@ HISTORY_SECONDS = 3600
 SPAN_DB_PER_LSB = 0.25   # UBX-MON-SPAN spectrum bytes are quarter-dB (u-blox: dB = value / 4)
 PGA_DB_PER_STEP = 0.5    # spectrum dB moved per PGA dB (measured ~0.52 on a real M10: 5.75 dB / 11 PGA)
 SPUR_DB = 5.0            # narrowband peak this far above baseline (gain-corrected) = spur event
+
+# Constellation presets for u-blox M10 (protocol 34+). M10 tracks up to four GNSS at once; BeiDou B1I can't
+# run alongside GLONASS, so the four-system set uses BeiDou B1C. EGNOS = SBAS PRNs 121, 123, 124, 126, 136.
+_EGNOS_MASK = sum(1 << (prn - 120) for prn in (121, 123, 124, 126, 136))
+_SIG = ["GPS_ENA", "GPS_L1CA_ENA", "GAL_ENA", "GAL_E1_ENA", "GLO_ENA", "GLO_L1_ENA", "BDS_ENA", "BDS_B1_ENA",
+        "BDS_B1C_ENA", "QZSS_ENA", "QZSS_L1CA_ENA", "QZSS_L1S_ENA", "SBAS_ENA", "SBAS_L1CA_ENA"]
+
+
+def _sig(**on):
+    return [(f"CFG_SIGNAL_{k}", 1 if on.get(k.split("_")[0], False) and (k.split("_")[0] != "BDS" or k in
+             ("BDS_ENA", on.get("BDS_SIG", ""))) else 0) for k in _SIG]
+
+
+GNSS_PRESETS = {      # order = order in the UI
+    "uk": {"label": "UK / Europe: GPS + Galileo + GLONASS + BeiDou (B1C), EGNOS",
+           "note": "All four systems, so the most satellites in view at UK latitudes. GLONASS is strong this far north; "
+                   "QZSS (Asia-Pacific only) is off; SBAS limited to EGNOS. Max fix rate 4 Hz, or 10 Hz in u-blox "
+                   "high-performance mode.",
+           "cfg": _sig(GPS=1, GAL=1, GLO=1, BDS=1, BDS_SIG="BDS_B1C_ENA", SBAS=1)
+                  + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little"))]},
+    "uk_fast": {"label": "UK / Europe, faster: GPS + Galileo + GLONASS, EGNOS",
+                "note": "Three systems with good UK coverage and a higher max fix rate (6 Hz, or 16 Hz in "
+                        "high-performance mode). Usually the best choice for a quad flying at 5-10 Hz.",
+                "cfg": _sig(GPS=1, GAL=1, GLO=1, SBAS=1) + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little"))]},
+    "default": {"label": "u-blox default: GPS + Galileo + BeiDou (B1I), QZSS, SBAS",
+                "note": "The M10's factory constellations (max 3 Hz, or 12 Hz in high-performance mode).",
+                "cfg": _sig(GPS=1, GAL=1, BDS=1, BDS_SIG="BDS_B1_ENA", QZSS=1, SBAS=1)},
+}
 DROP_USED_MIN_S = 5      # a sat must have been in the fix this long...
 DROP_GONE_S = 3          # ...and out of it this long, before we call it a drop (no flapping)
 CNO_STEP_DB = 4          # strongest sats falling this much together = broadband/front-end event
@@ -338,6 +366,18 @@ class State:
             self.rf = blocks
             if self.run:
                 self.run.log_rf(blocks)
+
+    def on_valget(self, msg):
+        on = {k[11:]: getattr(msg, k) for k in dir(msg) if k.startswith("CFG_SIGNAL_")}
+        if not on:
+            return
+        names = [n for n, k in (("GPS", "GPS_ENA"), ("Galileo", "GAL_ENA"), ("GLONASS", "GLO_ENA"), ("BeiDou", "BDS_ENA"),
+                                ("QZSS", "QZSS_ENA"), ("SBAS", "SBAS_ENA")) if on.get(k)]
+        if on.get("BDS_ENA"):
+            sig = [x for x, k in (("B1I", "BDS_B1_ENA"), ("B1C", "BDS_B1C_ENA")) if on.get(k)]
+            names = [f"BeiDou {'+'.join(sig)}" if n == "BeiDou" and sig else n for n in names]
+        with self.lock:
+            self.info["gnss"] = names
 
     def on_mon_span(self, msg):
         for i in range(1, msg.numRfBlocks + 1):
@@ -1179,6 +1219,8 @@ class Receiver(threading.Thread):
             with self.st.lock:
                 self.st.info["baud"] = self.target_baud
         self.configure(gen9)
+        if gen9:
+            self.poll_signals()
         self.log("streaming")
         if self.st.hub:
             self.st.hub.on_identified(self.st)
@@ -1244,6 +1286,20 @@ class Receiver(threading.Thread):
             pass
         return None
 
+    def poll_signals(self):
+        """Ask which constellations are on (CFG-VALGET); the reply is handled in loop()."""
+        try:
+            self.send(UBXMessage.config_poll(0, 0, [f"CFG_SIGNAL_{k}" for k in _SIG]))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def apply_gnss(self, preset, save=False):
+        p = GNSS_PRESETS[preset]
+        layers = 7 if save else 1                   # RAM, or RAM + BBR + flash
+        self.send(UBXMessage.config_set(layers, 0, p["cfg"]))
+        time.sleep(1.0)                             # the receiver restarts its GNSS engine
+        self.poll_signals()
+
     def configure(self, gen9):
         msgs = ["NAV_SAT", "NAV_PVT", "MON_RF", "MON_SPAN", "NAV_SIG"] if gen9 else []
         if gen9:
@@ -1267,7 +1323,8 @@ class Receiver(threading.Thread):
         rdr = UBXReader(self.ser, protfilter=UBX_PROTOCOL, quitonerror=0)
         handlers = {"NAV-SAT": self.st.on_nav_sat, "NAV-SIG": self.st.on_nav_sig,
                     "NAV-PVT": self.st.on_nav_pvt, "MON-RF": self.st.on_mon_rf,
-                    "MON-HW": self.st.on_mon_hw, "MON-SPAN": self.st.on_mon_span}
+                    "MON-HW": self.st.on_mon_hw, "MON-SPAN": self.st.on_mon_span,
+                    "CFG-VALGET": self.st.on_valget}
         last_data = time.time()
         while True:
             raw, msg = rdr.read()
@@ -1772,7 +1829,7 @@ class Hub:
                 h = st.history[-1] if st.history else {}
                 out.append({
                     "id": st.rid, "port": st.port_label, "dev": st.port, "meta": st.meta,
-                    "info": {k: st.info.get(k) for k in ("status", "model", "fw", "protver", "uniqid", "spectrum", "sim", "baud", "ubx_tcp", "via_fc")},
+                    "info": {k: st.info.get(k) for k in ("status", "model", "fw", "protver", "uniqid", "spectrum", "sim", "baud", "ubx_tcp", "via_fc", "gnss")},
                     "fix": st.pvt.get("fix"), "fixType": st.pvt.get("fixType"),
                     "now": {k: h.get(k) for k in ("cnoTop", "used", "tracked", "gainCut", "agcDrop", "spikes",
                                                   "runErr", "hAcc", "pga", "jamInd")},
@@ -1832,6 +1889,27 @@ def make_app(hub: Hub) -> Flask:
     def set_meta(rid):
         m = hub.set_meta(rid, request.get_json(force=True, silent=True) or {})
         return jsonify({"ok": m is not None, "meta": m})
+
+    @app.get("/api/gnss/presets")
+    def gnss_presets():
+        return jsonify([{"id": k, "label": v["label"], "note": v["note"]} for k, v in GNSS_PRESETS.items()])
+
+    @app.post("/api/receivers/<rid>/gnss")
+    def set_gnss(rid):
+        st = hub.get(rid)
+        body = request.get_json(force=True, silent=True) or {}
+        preset, save = body.get("preset"), bool(body.get("save"))
+        if st is None or preset not in GNSS_PRESETS:
+            return jsonify({"ok": False, "error": "unknown receiver or preset"}), 400
+        if (st.info.get("protver") or 0) < 34 or st.info.get("sim"):
+            return jsonify({"ok": False, "error": "constellation presets need a u-blox M10 (protocol 34+)"}), 400
+        rx = getattr(st, "rxthread", None)
+        if rx is None or rx.ser is None:
+            return jsonify({"ok": False, "error": "receiver not connected"}), 409
+        rx.apply_gnss(preset, save)
+        st.event("gnss", f"Constellations set: {GNSS_PRESETS[preset]['label']}"
+                         f"{' (saved to GPS flash)' if save else ' (RAM only, until power-off)'}", "info")
+        return jsonify({"ok": True})
 
     # ---- per-receiver live state ----
     @app.get("/api/state")

@@ -273,6 +273,13 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
     <label>Notes</label><textarea name="notes" rows="2" placeholder="shielding, cable length, firmware, anything"></textarea>
     <label>Port</label><span class="ro" id="specPort"></span>
     <label>Detected</label><span class="ro" id="specChip"></span>
+    <label>Constellations</label><span class="ro" id="specGnss">–</span>
+    <label>Set constellations</label>
+    <div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select id="gnssPreset" style="flex:1;min-width:220px"></select>
+        <button class="btn sm" id="gnssSend" type="button">Send to GPS</button></div>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" id="gnssSave" style="width:auto"> Keep after power-off (save to the GPS's flash)</label>
+      <div class="muted" id="gnssNote" style="font-size:12px;margin-top:4px"></div></div>
   </form>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
     <button class="btn" id="specCancel">Cancel</button><button class="btn primary" id="specSave">Save</button></div>
@@ -399,7 +406,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-30.1";
+const PAGE_VERSION = "2026-10-30.2";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1400,8 +1407,40 @@ async function openSpec(id){
   const f = $("#specForm"); for (const k of ["name","role","product","antenna","location","distance_cm","notes"]) f.elements[k].value = r.meta[k] || (k==="role"?"test":"");
   $("#specFor").textContent = r.id; $("#specPort").textContent = `${r.port} (${r.dev})`;
   $("#specChip").textContent = `${r.info.model||"?"} · fw ${r.info.fw||"?"} · protocol ${r.info.protver||"?"}${r.info.uniqid?` · chip ID ${r.info.uniqid}`:""}`;
+  $("#specGnss").textContent = (r.info.gnss && r.info.gnss.length) ? r.info.gnss.join(" + ") : "not read yet";
+  await loadGnssPresets();
+  const m10 = (r.info.protver||0) >= 34 && !r.info.sim;
+  $("#gnssSend").disabled = $("#gnssPreset").disabled = !m10;
+  if (!m10) $("#gnssNote").textContent = "Constellation presets need a u-blox M10.";
   $("#specDlg").showModal(); }
 $("#specCancel").onclick = () => $("#specDlg").close();
+let gnssPresets = null;
+async function loadGnssPresets(){
+  if (!gnssPresets){ let list = []; try { list = await fetch("/api/gnss/presets").then(r=>r.json()); } catch(e){}
+    gnssPresets = Object.fromEntries(list.map(p=>[p.id, p]));
+    $("#gnssPreset").innerHTML = list.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join(""); }
+  gnssNote();
+}
+function gnssNote(){ const v = gnssPresets && gnssPresets[$("#gnssPreset").value]; if (!v) return;
+  $("#gnssNote").innerHTML = esc(v.note) + ($("#gnssSave").checked
+    ? " <b>Saved to flash:</b> survives power-off, but a flight controller may still set its own constellations at boot (set them in the FC's GPS settings too)."
+    : " RAM only: gone at the next power-off, so the FC's own setup comes back."); }
+$("#gnssPreset").onchange = gnssNote; $("#gnssSave").onchange = gnssNote;
+$("#gnssSend").onclick = async () => {
+  const b = $("#gnssSend"); b.disabled = true; b.textContent = "Sending…";
+  try {
+    const r = await fetch(`/api/receivers/${encodeURIComponent(specRx)}/gnss`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({preset: $("#gnssPreset").value, save: $("#gnssSave").checked})}).then(r=>r.json());
+    $("#gnssNote").innerHTML = r.ok ? statusBadge("good", "Sent. The GPS restarts tracking, so expect a few seconds of lower C/N0 while it re-acquires.")
+                                    : statusBadge("crit", esc(r.error || "failed"));
+    const before = $("#specGnss").textContent;
+    for (let i = 0; i < 8; i++){            // the receiver needs a moment to restart and answer
+      await new Promise(res => setTimeout(res, 1000));
+      const o = await fetch("/api/overview?since=" + (Date.now()/1000+5)).then(r=>r.json());
+      const x = o.receivers.find(x=>x.id===specRx);
+      if (x && x.info.gnss){ const t = x.info.gnss.join(" + "); $("#specGnss").textContent = t; if (t !== before) break; } }
+  } finally { b.disabled = false; b.textContent = "Send to GPS"; }
+};
 $("#specSave").onclick = async () => { const f = $("#specForm"), body = {};
   for (const k of ["name","role","product","antenna","location","distance_cm","notes"]) body[k] = f.elements[k].value;
   await fetch(`/api/receivers/${encodeURIComponent(specRx)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
