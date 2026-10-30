@@ -21,7 +21,7 @@ Both give the same dashboard and logs:
 - **Per-satellite C/N0**, elevation, azimuth, used/not used, and per-signal detail, shown in a sky plot and a bar chart.
 - **Per-constellation signal strength over time**, with alerts and your markers drawn on the chart.
 - **Receiver front end**: jamming indicator, AGC, noise, PGA gain, and L1 in-band power, each on its own small chart.
-- **Position drift**: a reference point is set automatically (median of good fixes). During a run's Baseline phase it follows that phase, updating every 10 s, and it's fixed when the next phase starts, and the UI shows how far the reported fix wanders, with alerts above a threshold. With several GPS, the Overview plots where each one thinks it is and how far apart they are.
+- **Position drift**: a reference point is kept ready automatically. Outside a run it follows the median of recent fixes taken while there's no sign of interference, updating every 10 s. How much history it averages depends on lock quality: about 30 s for a ±0.3 m lock, up to 10 minutes for a poor one, and it pauses while there's interference. During a run's Baseline phase it follows that phase, and it locks when the next phase starts. A typed-in point is never overwritten, and the UI shows how far the reported fix wanders, with alerts above a threshold. With several GPS, the Overview plots where each one thinks it is and how far apart they are.
 - **Events**: satellite losses (unexpected ones above 20° flagged separately), mass dropouts, simultaneous C/N0 dips, jamming state, fix changes and drift.
 - **Labelled test runs** logged to CSV, plus a comparison table with Δ against your baseline run.
 

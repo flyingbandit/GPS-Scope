@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.9"
+GPSSCOPE_VERSION = "2026-10-30.10"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -129,7 +129,10 @@ CNO_STEP_DB = 4          # strongest sats falling this much together = broadband
 GAIN_CUT_ALERT_DB = 3    # PGA this far below reference = strong in-band energy
 AGC_DROP_ALERT_PCT = 10  # M8 (no PGA): AGC this far below reference
 GAIN_REF_WINDOW = 600    # samples kept for the baseline median
-BASE_REF_EVERY_S = 10    # s - during a Baseline phase the reference position updates this often
+BASE_REF_EVERY_S = 10    # s - outside a run / during Baseline the reference position updates this often
+REF_MIN_S = 30           # s - outside a run the reference follows the median of recent CLEAN fixes over a window
+REF_MAX_S = 600          #     sized from lock quality: REF_MIN_S at hAcc 0.3 m, growing with hAcc^2, capped here
+CLEAN_HOLD_S = 15        # s - after any interference sign, fixes aren't trusted for the reference for this long
 GAIN_SETTLE_S = 60       # ignore the front end's gain for this long after (re)connecting: it starts high and settles
 GAIN_REF_CHUNK = 10      # auto reference = highest median of this many consecutive samples (one odd frame can't set it)
 # The auto reference never expires while the GPS stays connected: a 10-min window let long interference become "normal".
@@ -269,7 +272,9 @@ class State:
         self._spike_count = None
         self.spec_hist = collections.deque(maxlen=600)   # waterfall on page load + phase baselines (10 min)
         self.phase_name, self.phase_start = None, now()
-        self._base_upd = 0.0            # last live update of the reference during a Baseline phase
+        self._base_upd = 0.0            # last automatic update of the reference
+        self._dirty_t = 0.0             # last time any interference sign was seen
+        self.clean_pos = collections.deque(maxlen=6000)   # 3D fixes taken while clean: (t, lat, lon, alt, fixType, hAcc)
         self.spec_max_label = "(since start)"
         self._prev_sats: dict = {}
         self.pos_hist = collections.deque(maxlen=6000)  # (t, lat, lon, alt, fixType, hAcc) - 10 min at 10 Hz
@@ -414,15 +419,29 @@ class State:
         if pvt["fixType"] not in (3, 4) or (pvt.get("hAcc") or 99) > 10:
             return
         t = now()
-        # During a run's Baseline phase the reference follows that phase: median of its fixes, every 10 s
-        if self.run and self.phase_name and self.phase_name.lower().startswith("base"):
-            if t - self.phase_start >= BASE_REF_EVERY_S and t - self._base_upd >= BASE_REF_EVERY_S:
-                self._base_upd = t
+        # Outside a run the reference keeps following recent clean fixes, so it's ready when a run starts;
+        # in a run's Baseline phase it follows that phase; any other phase locks it. A typed-in point stays.
+        in_base = bool(self.run and self.phase_name and self.phase_name.lower().startswith("base"))
+        live = not self.run and not (self.ref or {}).get("manual")
+        if in_base or live:
+            if t - self._base_upd < BASE_REF_EVERY_S or (in_base and t - self.phase_start < BASE_REF_EVERY_S):
+                return
+            self._base_upd = t
+            if in_base:
                 r = self.avg_position(since=self.phase_start)
+                tag = "Baseline phase so far"
                 if r:
-                    first = not str((self.ref or {}).get("source", "")).startswith("Baseline phase")
-                    r["source"] = f"Baseline phase so far, median of {r['n']} fixes (updates every {BASE_REF_EVERY_S} s)"
-                    self.set_ref(r, quiet=not first)
+                    r["source"] = f"{tag}, median of {r['n']} fixes (updates every {BASE_REF_EVERY_S} s)"
+            else:
+                tag = "following"
+                if not self._is_clean(t):
+                    if self.ref and str(self.ref.get("source", "")).startswith(tag) and "paused" not in self.ref["source"]:
+                        self.ref["source"] += " · paused: interference"
+                    return
+                r = self._follow_ref(t)
+            if r:
+                first = not str((self.ref or {}).get("source", "")).startswith(tag)
+                self.set_ref(r, quiet=not first)
             return
         if self.ref:
             lat0 = self.ref["lat"]
@@ -443,6 +462,38 @@ class State:
                 self._prov_set = True
                 self.ref = r
                 self.trail.clear()
+
+    def _is_clean(self, t):
+        """No sign of interference now or in the last CLEAN_HOLD_S: gain cut, gain alert, high CW jamming
+        indicator or a C/N0 step."""
+        g = self.gain or {}
+        h = self.history[-1] if self.history else {}
+        if self.gain_alert or (g.get("gainCut") or 0) >= 3 or (h.get("jamInd") or 0) >= 80 or t - self._last_mass < 30:
+            self._dirty_t = t
+        return t - self._dirty_t > CLEAN_HOLD_S
+
+    def _follow_ref(self, t):
+        """Median of recent clean fixes. The window is chosen from lock quality: the receiver's own accuracy
+        estimate (hAcc) says how much averaging it needs - ~30 s for a ±0.3 m lock, minutes for a poor one."""
+        pts = [p for p in self.clean_pos if p[0] >= t - REF_MAX_S]
+        accs = [p[5] for p in pts if p[5] is not None]
+        if len(pts) < 5 or not accs:
+            return None
+        hm = statistics.median(accs)
+        win = int(min(REF_MAX_S, max(REF_MIN_S, REF_MIN_S * (hm / 0.3) ** 2)))
+        use = [p for p in pts if p[0] >= t - win]
+        lim = max(2.0, 1.5 * hm)
+        good = [p for p in use if p[5] is None or p[5] <= lim]
+        use = good if len(good) >= 5 else use
+        span = use[-1][0] - use[0][0] if len(use) > 1 else 0
+        if len(use) < 5 or span < 10:
+            return None
+        unc = hm / math.sqrt(max(1.0, span / 10.0))      # GPS error is correlated over ~10 s
+        state = "ready" if span >= 0.9 * win else f"settling {int(span)}/{win} s"
+        return {"lat": round(statistics.median(p[1] for p in use), 8),
+                "lon": round(statistics.median(p[2] for p in use), 8),
+                "alt": round(statistics.median(p[3] for p in use), 2), "n": len(use),
+                "source": f"following ({state}): median of the last {win} s of clean fixes, ±{unc:.1f} m"}
 
     def _apply_ref(self, pvt):
         if not self.ref or pvt["fixType"] not in (2, 3, 4):
@@ -471,7 +522,10 @@ class State:
 
     def update_pvt(self, pvt):
         with self.lock:
-            self.pos_hist.append((now(), pvt["lat"], pvt["lon"], pvt["alt"], pvt["fixType"], pvt.get("hAcc")))
+            t = now()
+            self.pos_hist.append((t, pvt["lat"], pvt["lon"], pvt["alt"], pvt["fixType"], pvt.get("hAcc")))
+            if pvt["fixType"] in (3, 4) and self._is_clean(t):
+                self.clean_pos.append(self.pos_hist[-1])
             self._check_ref(pvt)
             self._apply_ref(pvt)
             if self.last_fix is not None and pvt["fixType"] != self.last_fix:
@@ -2443,7 +2497,7 @@ def make_app(hub: Hub) -> Flask:
             try:
                 r = {"lat": float(b["lat"]), "lon": float(b["lon"]),
                      "alt": float(b["alt"]) if b.get("alt") not in (None, "") else None,
-                     "source": b.get("source", "manual")}
+                     "source": b.get("source", "manual"), "manual": True}
             except (KeyError, ValueError):
                 return jsonify({"ok": False, "error": "lat/lon required"}), 400
             if not (-90 <= r["lat"] <= 90 and -180 <= r["lon"] <= 180):
