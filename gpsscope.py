@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.5"
+GPSSCOPE_VERSION = "2026-10-30.6"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -133,6 +133,28 @@ GAIN_REF_WINDOW = 600    # s - auto reference = highest gain seen in this window
 
 def now() -> float:
     return time.time()
+
+
+def write_json(path, obj, **kw):
+    """Write JSON atomically: a power cut mid-write leaves the old file, never an empty one."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, **kw)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def read_json(path, default=None):
+    """Read JSON, returning default if the file is missing, empty or damaged."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
 
 
 def top_mean(vals, n):
@@ -285,8 +307,7 @@ class State:
                 self.drift_thresh = float(thresh)
             self.trail.clear()
             self.drifting = False
-            with open(self._ref_path(), "w") as f:
-                json.dump({"ref": self.ref, "thresh": self.drift_thresh}, f)
+            write_json(self._ref_path(), {"ref": self.ref, "thresh": self.drift_thresh})
             if ref:
                 self.event("ref", f"Reference position set ({ref['source']}): "
                            f"{ref['lat']:.7f}, {ref['lon']:.7f} - alert above {self.drift_thresh} m")
@@ -855,8 +876,8 @@ class Run:
         self.dir = os.path.join(log_dir, self.id, sub) if sub else os.path.join(log_dir, self.id)
         os.makedirs(self.dir, exist_ok=True)
         self.meta, self.info = dict(meta or {}), dict(info or {})
-        with open(os.path.join(self.dir, "receiver.json"), "w") as f:   # spec stamped into the run
-            json.dump({"meta": self.meta, "info": {k: v for k, v in self.info.items() if k != "msg_counts"}}, f, indent=2)
+        write_json(os.path.join(self.dir, "receiver.json"),   # spec stamped into the run
+                   {"meta": self.meta, "info": {k: v for k, v in self.info.items() if k != "msg_counts"}}, indent=2)
         self.raw = None
         try:                         # receiver's raw UBX stream: opens natively in u-center (File > Open)
             self.raw = open(os.path.join(self.dir, "raw.ubx"), "ab", buffering=65536)
@@ -1026,8 +1047,7 @@ class Run:
     def close(self):
         s = self.summary()
         a = self.analysis(force=True)
-        with open(os.path.join(self.dir, "analysis.json"), "w") as f:
-            json.dump(a, f, indent=2)
+        write_json(os.path.join(self.dir, "analysis.json"), a, indent=2)
         others = [p for p in a["phases"] if not p["baseline"] and p.get("paired", {}).get("med") is not None]
         if others:
             worst = min(others, key=lambda p: p["paired"]["med"])
@@ -1037,8 +1057,7 @@ class Run:
         s["phases"] = [p["name"] for p in a["phases"]]
         s["meta"] = self.meta
         s["model"] = self.info.get("model")
-        with open(os.path.join(self.dir, "summary.json"), "w") as f:
-            json.dump(s, f, indent=2)
+        write_json(os.path.join(self.dir, "summary.json"), s, indent=2)
         for f in self.files.values():
             f.close()
         raw, self.raw = self.raw, None
@@ -1698,8 +1717,7 @@ class Hub:
 
     # -- receivers ---------------------------------------------------------
     def _save_cfg(self):
-        with open(self.cfg_path, "w") as f:
-            json.dump(self.cfg, f, indent=2)
+        write_json(self.cfg_path, self.cfg, indent=2)
 
     def add(self, dev, key=None, label=None):
         key = key or port_key(dev)
@@ -1889,8 +1907,7 @@ class Hub:
                                                     "port": st.port_label, "summary": sm}
                         st.run = None
             out["compare"] = analysis.compare(ana) if ana else None
-            with open(os.path.join(self.log_dir, out["id"], "run.json"), "w") as f:
-                json.dump(out, f, indent=2)
+            write_json(os.path.join(self.log_dir, out["id"], "run.json"), out, indent=2)
             self.run = None
             return out
 
@@ -2131,23 +2148,23 @@ def make_app(hub: Hub) -> Flask:
 
     def analyse_dir(d):
         p = os.path.join(d, "analysis.json")
-        if os.path.exists(p):
-            with open(p) as f:
-                return json.load(f)
+        a = read_json(p)
+        if a:
+            return a
         tl, sats, pvt, marks, t0, t1, src = analyse_run.load(d)
         a = analysis.analyse(tl, sats, pvt, marks, t0, t1)
         a["phaseSource"] = src
-        with open(p, "w") as f:
-            json.dump(a, f, indent=2)
+        write_json(p, a, indent=2)
         return a
 
     @app.get("/api/runs/<rid>/analysis")
     def finished_analysis(rid):
         d = run_dirs(rid)
         sub = request.args.get("rx")
-        if os.path.exists(os.path.join(d, "run.json")):          # multi-receiver run
-            with open(os.path.join(d, "run.json")) as f:
-                rj = json.load(f)
+        rj = read_json(os.path.join(d, "run.json"))
+        if rj is None:
+            rj = rebuild_run_json(d)
+        if rj:                                                   # multi-receiver run
             subs = list(rj["receivers"])
             sub = sub if sub in subs else (subs[0] if subs else None)
             if not sub:
@@ -2158,9 +2175,8 @@ def make_app(hub: Hub) -> Flask:
             return jsonify(a)
         a = analyse_dir(d)                                       # single-receiver run (older)
         sp = os.path.join(d, "summary.json")
-        if os.path.exists(sp):
-            with open(sp) as f:
-                sm = json.load(f)
+        sm = read_json(sp)
+        if sm:
             a["label"], a["start"] = sm.get("label", rid), sm.get("start")
         a["live"] = False
         return jsonify(a)
@@ -2168,31 +2184,63 @@ def make_app(hub: Hub) -> Flask:
     @app.get("/api/runs/<rid>/compare")
     def finished_compare(rid):
         d = run_dirs(rid)
-        if not os.path.exists(os.path.join(d, "run.json")):
+        rj = read_json(os.path.join(d, "run.json")) or rebuild_run_json(d)
+        if not rj:
             return jsonify(None)
-        with open(os.path.join(d, "run.json")) as f:
-            rj = json.load(f)
         ana = {r: (v["meta"], analyse_dir(os.path.join(d, r))) for r, v in rj["receivers"].items()}
         c = analysis.compare(ana)
         return jsonify(dict(c, label=rj["label"], live=False))
+
+    def rebuild_run_json(d):
+        """A run whose run.json was lost (e.g. power cut while stopping): rebuild what we can from its folders."""
+        subs = sorted(x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)))
+        if not subs:
+            return None
+        rid = os.path.basename(d)
+        rx = {}
+        for r in subs:
+            info = read_json(os.path.join(d, r, "receiver.json"), {}) or {}
+            sm = read_json(os.path.join(d, r, "summary.json"), {}) or {}
+            rx[r] = {"meta": info.get("meta", {}), "model": (info.get("info") or {}).get("model"), "summary": sm}
+        start = next((v["summary"].get("start") for v in rx.values() if v["summary"].get("start")), None)
+        if start is None:
+            try:
+                start = time.mktime(time.strptime(rid[:15], "%Y%m%d-%H%M%S"))
+            except ValueError:
+                start = os.path.getmtime(d)
+        dur = max((v["summary"].get("duration") or 0 for v in rx.values()), default=0)
+        label = rid.split("_", 1)[1].replace("-", " ") if "_" in rid else rid
+        return {"id": rid, "label": label, "start": start, "duration": dur, "multi": True,
+                "receivers": rx, "recovered": True}
 
     @app.get("/api/runs")
     def runs():
         out = []
         for d in sorted(os.listdir(hub.log_dir), reverse=True):
-            if d.startswith("_"):
+            full = os.path.join(hub.log_dir, d)
+            if d.startswith("_") or not os.path.isdir(full):
                 continue
-            rp, sp = os.path.join(hub.log_dir, d, "run.json"), os.path.join(hub.log_dir, d, "summary.json")
-            if os.path.exists(rp):
-                with open(rp) as f:
-                    rj = json.load(f)
-                rj.pop("compare", None)
-                out.append(rj)
-            elif os.path.exists(sp):
-                with open(sp) as f:
-                    s1 = json.load(f)
-                out.append({"id": s1["id"], "label": s1["label"], "start": s1["start"], "duration": s1["duration"],
-                            "multi": False, "receivers": {"gps1": {"meta": s1.get("meta", {}), "summary": s1}}})
+            if hub.run and hub.run.get("id") == d:
+                continue                                         # still recording
+            rp, sp = os.path.join(full, "run.json"), os.path.join(full, "summary.json")
+            try:
+                if os.path.exists(rp):
+                    rj = read_json(rp) or rebuild_run_json(full)
+                    if rj:
+                        rj.pop("compare", None)
+                        out.append(rj)
+                elif os.path.exists(sp):
+                    s1 = read_json(sp)
+                    if s1:
+                        out.append({"id": s1.get("id", d), "label": s1.get("label", d), "start": s1.get("start"),
+                                    "duration": s1.get("duration"), "multi": False,
+                                    "receivers": {"gps1": {"meta": s1.get("meta", {}), "summary": s1}}})
+                else:
+                    rj = rebuild_run_json(full)                  # stopped by a power cut: no run.json at all
+                    if rj:
+                        out.append(rj)
+            except Exception as e:                               # one bad run must never hide the rest
+                print(f"runs list: skipped {d} ({e})", flush=True)
         return jsonify(out)
 
     @app.get("/api/runs/<rid>.zip")
@@ -2280,8 +2328,7 @@ def make_app(hub: Hub) -> Flask:
         b = request.get_json(force=True, silent=True) or {}
         with st.lock:
             st.drift_thresh = max(0.2, float(b.get("thresh", 3)))
-            with open(st._ref_path(), "w") as f:
-                json.dump({"ref": st.ref, "thresh": st.drift_thresh}, f)
+            write_json(st._ref_path(), {"ref": st.ref, "thresh": st.drift_thresh})
         return jsonify({"ok": True})
 
     @app.post("/api/spectrum/resetmax")
