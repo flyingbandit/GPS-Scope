@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.7"
+GPSSCOPE_VERSION = "2026-10-30.8"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -128,7 +128,10 @@ DROP_GONE_S = 3          # ...and out of it this long, before we call it a drop 
 CNO_STEP_DB = 4          # strongest sats falling this much together = broadband/front-end event
 GAIN_CUT_ALERT_DB = 3    # PGA this far below reference = strong in-band energy
 AGC_DROP_ALERT_PCT = 10  # M8 (no PGA): AGC this far below reference
-GAIN_REF_WINDOW = 600    # s - auto reference = highest gain seen in this window
+GAIN_REF_WINDOW = 600    # samples kept for the baseline median
+GAIN_SETTLE_S = 60       # ignore the front end's gain for this long after (re)connecting: it starts high and settles
+GAIN_REF_CHUNK = 10      # auto reference = highest median of this many consecutive samples (one odd frame can't set it)
+# The auto reference never expires while the GPS stays connected: a 10-min window let long interference become "normal".
 
 
 def now() -> float:
@@ -249,6 +252,9 @@ class State:
         self.last_fix = None
         self.sim_interference = False
         self.gain_hist = collections.deque(maxlen=GAIN_REF_WINDOW)  # (t, pga, agcPct)
+        self._gain_t0 = now()
+        self._chunk = {1: [], 2: []}     # pending settled samples per signal (1 = PGA, 2 = AGC)
+        self._hi = {1: None, 2: None}    # highest chunk median since connecting
         self.gain_alert = False
         self.gain = {}
         self.sat_track: dict = {}
@@ -693,20 +699,49 @@ class State:
             self.run.on_sample(sample)
 
     # -- gain reduction: the real broadband-interference signature --------
+    def reset_gain(self, chip_changed=False):
+        """Fresh connection: the front end starts at high gain and settles, so restart the auto reference.
+        A different chip on the port also invalidates the captured baseline."""
+        self.gain_hist.clear()
+        self._gain_t0 = now()
+        self._chunk = {1: [], 2: []}
+        self._hi = {1: None, 2: None}
+        self.gain_alert = False
+        if chip_changed:
+            self.spec_baseline = None
+
+    def _auto_ref(self, t, idx, v):
+        """Highest median of GAIN_REF_CHUNK consecutive settled samples since connecting (None until known)."""
+        if v is not None and t - self._gain_t0 >= GAIN_SETTLE_S:
+            c = self._chunk[idx]
+            c.append(v)
+            if len(c) >= GAIN_REF_CHUNK:
+                m = statistics.median(c)
+                self._hi[idx] = m if self._hi[idx] is None else max(self._hi[idx], m)
+                del c[:GAIN_REF_CHUNK // 2]
+        return self._hi[idx]
+
     def _gain_status(self, t, rf0):
         pga = self.spec["pga"] if self.spec else None
         agc = rf0.get("agcPct")
         self.gain_hist.append((t, pga, agc))
         g = {}
         if pga is not None:
-            if self.spec_baseline:
-                ref, src = self.spec_baseline["pga"], "baseline"
+            auto = self._auto_ref(t, 1, pga)
+            if self.spec_baseline and self.spec_baseline.get("pga") is not None:
+                ref, src = self.spec_baseline["pga"], self.spec_baseline.get("pgaSrc", "baseline")
             else:
-                ref, src = max(p for _, p, _ in self.gain_hist if p is not None), "10-min max"
-            g.update(pga=pga, pgaRef=ref, gainCut=max(0, ref - pga), refSrc=src)
+                ref = None if auto is None else int(round(max(auto, pga)))
+                src = "auto: highest settled since connecting"
+            if ref is not None:
+                g.update(pga=pga, pgaRef=ref, gainCut=max(0, ref - pga), refSrc=src)
+            else:
+                g.update(pga=pga, refSrc=f"settling ({GAIN_SETTLE_S} s after connecting)")
         if agc is not None:
-            aref = max(a for _, _, a in self.gain_hist if a is not None)
-            g.update(agcRef=aref, agcDrop=round(max(0.0, aref - agc), 1))
+            aref = self._auto_ref(t, 2, agc)
+            if aref is not None:
+                aref = max(aref, agc)
+                g.update(agcRef=aref, agcDrop=round(max(0.0, aref - agc), 1))
         if "gainCut" in g:
             bad = g["gainCut"] >= GAIN_CUT_ALERT_DB
             clear = g["gainCut"] < GAIN_CUT_ALERT_DB - 1
@@ -816,8 +851,11 @@ class State:
             t0 = since if since is not None else now() - 30
             n = len(self.spec["db"])
             fr = [d for t, d in self.spec_hist if t >= t0 and len(d) == n] or list(self._spec_recent) or [self.spec["db"]]
+            pgas = [p for tt, p, _ in self.gain_hist if p is not None and tt >= t0 and tt - self._gain_t0 >= GAIN_SETTLE_S]
+            pga = int(round(statistics.median(pgas))) if pgas else self.spec["pga"]
             self.spec_baseline = {"db": [statistics.median(c) for c in zip(*fr)], "max": [max(c) for c in zip(*fr)],
-                                  "frames": len(fr), "pga": self.spec["pga"], "t": now(), "label": label}
+                                  "frames": len(fr), "pga": pga, "t": now(), "label": label,
+                                  "pgaSrc": f"{label}: median of {len(pgas)}" if pgas else f"{label}: at capture"}
             self.event("baseline", f"Spectrum baseline captured ({label}, {len(fr)} sweeps): median and peak per bin")
             return True
 
@@ -1824,6 +1862,10 @@ class Hub:
         """Called once a receiver answers. Warn if a different chip sits on this port than last time."""
         c = self.cfg.setdefault(st.port_key, {})
         uid = st.info.get("uniqid")
+        prev = getattr(st, "_gain_uid", None)
+        with st.lock:
+            st.reset_gain(chip_changed=bool(uid and prev and prev != uid))
+            st._gain_uid = uid
         if uid and c.get("uniqid") and c["uniqid"] != uid:
             st.meta["chip_changed"] = True
             st.event("spec", f"A different GPS chip is on {st.port_label} than last time "
@@ -2366,6 +2408,7 @@ def make_app(hub: Hub) -> Flask:
             with st.lock:
                 if body.get("clear"):
                     st.spec_baseline = None
+                    st.reset_gain()
                 elif st.spec:
                     st.capture_spec_baseline(body.get("label") or "baseline")   # last 30 s
                     st.reset_max("(since baseline)")      # "loudest" restarts: compares after vs before

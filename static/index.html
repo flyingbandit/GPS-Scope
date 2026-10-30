@@ -411,7 +411,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-30.7";
+const PAGE_VERSION = "2026-10-30.8";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -487,9 +487,10 @@ function gainLevel(g){
 function gainTile(){
   const g = S.gain||{};
   if (g.gainCut!=null) return ["PGA reduction", (g.gainCut>0?"−":"")+g.gainCut+" <small>dB</small>",
-    `<span title="Receiver PGA gain ${g.pga} dB vs reference ${g.pgaRef} dB (${esc(g.refSrc||"")}). The receiver turns its gain down when strong in-band energy arrives - the most reliable sign of broadband interference such as a noisy receiver.">${statusBadge(gainLevel(g), `PGA ${g.pga} / ref ${g.pgaRef}`)}</span>`];
+    `<span title="Receiver PGA gain ${g.pga} dB vs reference ${g.pgaRef} dB (${esc(g.refSrc||"")}). The receiver turns its gain down when strong in-band energy arrives - the most reliable sign of broadband interference such as a noisy receiver.">${statusBadge(gainLevel(g), `PGA ${g.pga} / ref ${g.pgaRef}${/^auto/.test(g.refSrc||"") ? "" : " (baseline)"}`)}</span>`];
   if (g.agcDrop!=null) return ["AGC reduction", "−"+fmt(g.agcDrop,1)+" <small>%</small>",
-    `<span title="AGC vs the highest seen in the last 10 minutes. A falling AGC means the receiver is reducing gain because more energy is arriving.">${statusBadge(gainLevel(g), `ref ${fmt(g.agcRef,0)} %`)}</span>`];
+    `<span title="AGC vs the highest settled level since this GPS connected. A falling AGC means the receiver is reducing gain because more energy is arriving.">${statusBadge(gainLevel(g), `ref ${fmt(g.agcRef,0)} %`)}</span>`];
+  if (g.pga!=null) return ["PGA reduction", "–", `<span class="muted">PGA ${g.pga} dB · ${esc(g.refSrc||"settling")}</span>`];
   return ["PGA reduction", "–", "waiting for data"];
 }
 function renderTiles(){

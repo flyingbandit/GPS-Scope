@@ -201,6 +201,7 @@ Suggested run shape: **≥ 60 s Baseline → ≥ 60 s RX on → ≥ 120 s RX off
 | One satellite drops at low elevation | Normal sky geometry. Logged as info only. |
 | Satellites above 20° lost while strong | Unexpected. Check the Events log and sky plot for direction. |
 | **Gain cut** tile/chart rises (PGA below baseline; on M8, AGC drop) | The receiver is turning its own gain down because strong energy is arriving in band. This is the most reliable sign of a noisy ELRS receiver, and it raises an alert at 3 dB. |
+| **What "baseline" means for the gain cut** | The median PGA over the run's **Baseline** phase (or a manual *Capture baseline*). Before you have one, it's the highest steady PGA since the GPS connected, ignoring the first 60 s while the front end settles. It never quietly expires, so long-running interference can't become the new normal. *Clear baseline* restarts it, and plugging in a different GPS clears it. |
 | **CW jamming indicator falls** while things get worse | Expected. It only detects single-tone (narrowband) jammers and is measured after the gain stage, so broadband noise drags it down. Don't use it on its own. |
 | **PGA gain drops versus baseline** | The receiver turned its own gain down because something strong is in band. The spectrum trace then sits lower overall, so the Δ view **understates** the problem. Watch the PGA tile. |
 | Narrow spikes on the spectrum | A spur from a clock or harmonic, e.g. a digital line or oscillator. Hover to read the frequency. |
