@@ -21,7 +21,7 @@ Both give the same dashboard and logs:
 - **Per-satellite C/N0**, elevation, azimuth, used/not used, and per-signal detail, shown in a sky plot and a bar chart.
 - **Per-constellation signal strength over time**, with alerts and your markers drawn on the chart.
 - **Receiver front end**: jamming indicator, AGC, noise, PGA gain, and L1 in-band power, each on its own small chart.
-- **Position drift**: set your true position, and the UI shows how far the reported fix wanders, with alerts above a threshold.
+- **Position drift**: a reference point is set automatically (median of good fixes; refined at the end of the Baseline phase), and the UI shows how far the reported fix wanders, with alerts above a threshold. With several GPS, the Overview plots where each one thinks it is and how far apart they are.
 - **Events**: satellite losses (unexpected ones above 20° flagged separately), mass dropouts, simultaneous C/N0 dips, jamming state, fix changes and drift.
 - **Labelled test runs** logged to CSV, plus a comparison table with Δ against your baseline run.
 
@@ -150,15 +150,17 @@ Each receiver runs at 10 Hz, so a Pi 4 or 5 comfortably handles several. On a Pi
 
 ## Constellation presets (M10)
 
-**Spec → Set constellations** sends a constellation setup to a u-blox M10 (directly, or through the FC in passthrough):
+**Spec → Set constellations** sends a setup suited to drones and planes to a u-blox M10 (directly, or through the FC in passthrough):
 
-| Preset | Systems | Max fix rate (default / high-performance) |
+| Preset | Systems | Fix rate |
 |---|---|---|
-| **UK / Europe** | GPS + Galileo + GLONASS + BeiDou B1C, SBAS limited to EGNOS, QZSS off | 4 / 10 Hz |
-| **UK / Europe, faster** | GPS + Galileo + GLONASS, EGNOS | 6 / 16 Hz |
-| u-blox default | GPS + Galileo + BeiDou B1I, QZSS, SBAS | 3 / 12 Hz |
+| **UK drone / plane** (recommended) | GPS + Galileo + GLONASS, SBAS limited to EGNOS, QZSS off | 5 Hz (M10 limit for this mix: 6 Hz) |
+| **UK drone / plane, most satellites** | + BeiDou B1C | 4 Hz (M10 limit for four systems) |
+| u-blox factory | GPS + Galileo + BeiDou B1I, QZSS, SBAS | 1 Hz |
 
-The M10 tracks up to four systems at once, and BeiDou B1I can't run alongside GLONASS, so the four-system preset uses B1C. GLONASS's orbits favour high latitudes like the UK; QZSS only covers Asia-Pacific. By default the change is RAM-only and is gone at the next power-off. Tick *Try to keep after power-off* to also save it to the GPS's backup RAM and flash. Most drone M10 modules have no flash, so it then lasts only while the module's backup battery or supercap holds. Also note that Betaflight/INAV/ArduPilot may set their own constellations at boot, so set them in the FC's GPS settings as well. The dialog shows which systems are currently on. The GPS restarts tracking when you send a preset, so expect a few seconds of lower C/N0 (logged as an event).
+Next to it, **platform** sets u-blox's dynamic model: *Airborne <1 g* (planes, gentle flying), *Airborne <2 g* (default, most quads), *Airborne <4 g* (racing/aerobatic), or *Portable* (u-blox's bench default). The M10 tracks up to four systems at once; BeiDou B1I can't run alongside GLONASS, so the four-system preset uses B1C. GLONASS's orbits favour high latitudes like the UK; QZSS only covers Asia-Pacific.
+
+By default the change is RAM-only and is gone at the next power-off. Tick *Try to keep after power-off* to also save it to the GPS's backup RAM and flash. Most drone M10 modules have no flash, so it then lasts only while the module's backup battery or supercap holds. A flight controller may also set its own constellations, rate and model at boot, so set them in the FC's GPS settings as well. The GPS restarts tracking when you send a preset, so expect a few seconds of lower C/N0 (logged as an event).
 
 ## Live view in u-center
 

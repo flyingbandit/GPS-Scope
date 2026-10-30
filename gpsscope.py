@@ -50,7 +50,7 @@ except ImportError:  # sim mode still works without them
     serial = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GPSSCOPE_VERSION = "2026-10-30.3"
+GPSSCOPE_VERSION = "2026-10-30.5"
 
 GNSS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
 GNSS_PREFIX = {0: "G", 1: "S", 2: "E", 3: "B", 4: "I", 5: "Q", 6: "R", 7: "N"}
@@ -73,7 +73,7 @@ QUALITY = {0: "no signal", 1: "searching", 2: "acquired", 3: "unusable",
            4: "code lock", 5: "code+carrier", 6: "code+carrier", 7: "code+carrier"}
 FIX = {0: "No fix", 1: "DR only", 2: "2D", 3: "3D", 4: "GNSS+DR", 5: "Time only"}
 JAM = {0: "unknown", 1: "OK", 2: "warning", 3: "critical"}
-ANT = {0: "init", 1: "unknown", 2: "OK", 3: "short", 4: "open"}
+ANT = {0: "init", 1: "not reported", 2: "OK", 3: "short", 4: "open"}
 
 # Reference frequencies drawn on the spectrum (MHz)
 BAND_MARKERS = [
@@ -104,21 +104,25 @@ def _sig(**on):
              ("BDS_ENA", on.get("BDS_SIG", ""))) else 0) for k in _SIG]
 
 
-GNSS_PRESETS = {      # order = order in the UI
-    "uk": {"label": "UK / Europe: GPS + Galileo + GLONASS + BeiDou (B1C), EGNOS",
-           "note": "All four systems, so the most satellites in view at UK latitudes. GLONASS is strong this far north; "
-                   "QZSS (Asia-Pacific only) is off; SBAS limited to EGNOS. Max fix rate 4 Hz, or 10 Hz in u-blox "
-                   "high-performance mode.",
-           "cfg": _sig(GPS=1, GAL=1, GLO=1, BDS=1, BDS_SIG="BDS_B1C_ENA", SBAS=1)
-                  + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little"))]},
-    "uk_fast": {"label": "UK / Europe, faster: GPS + Galileo + GLONASS, EGNOS",
-                "note": "Three systems with good UK coverage and a higher max fix rate (6 Hz, or 16 Hz in "
-                        "high-performance mode). Usually the best choice for a quad flying at 5-10 Hz.",
-                "cfg": _sig(GPS=1, GAL=1, GLO=1, SBAS=1) + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little"))]},
-    "default": {"label": "u-blox default: GPS + Galileo + BeiDou (B1I), QZSS, SBAS",
-                "note": "The M10's factory constellations (max 3 Hz, or 12 Hz in high-performance mode).",
-                "cfg": _sig(GPS=1, GAL=1, BDS=1, BDS_SIG="BDS_B1_ENA", QZSS=1, SBAS=1)},
+GNSS_PRESETS = {      # order = order in the UI. Rates stay under the M10's default-mode limits for each mix.
+    "uk_air": {"label": "UK drone / plane (recommended): GPS + Galileo + GLONASS, EGNOS · 5 Hz",
+               "note": "Three systems with strong UK coverage (GLONASS suits high latitudes), EGNOS corrections, "
+                       "QZSS off. 5 Hz fixes, inside the M10's 6 Hz limit for this mix, so it keeps up in flight.",
+               "cfg": _sig(GPS=1, GAL=1, GLO=1, SBAS=1) + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little")),
+                                                          ("CFG_RATE_MEAS", 200)]},
+    "uk_air4": {"label": "UK drone / plane, most satellites: + BeiDou B1C · 4 Hz",
+                "note": "All four systems for the most satellites in view, at the cost of rate: 4 Hz is the M10's "
+                        "limit for four systems. Good for slow survey or long-range planes; a bit slow for fast quads.",
+                "cfg": _sig(GPS=1, GAL=1, GLO=1, BDS=1, BDS_SIG="BDS_B1C_ENA", SBAS=1)
+                       + [("CFG_SBAS_PRNSCANMASK", _EGNOS_MASK.to_bytes(8, "little")), ("CFG_RATE_MEAS", 250)]},
+    "default": {"label": "u-blox factory: GPS + Galileo + BeiDou B1I, QZSS, SBAS · 1 Hz",
+                "note": "The M10's factory constellations and 1 Hz rate, as it ships.",
+                "cfg": _sig(GPS=1, GAL=1, BDS=1, BDS_SIG="BDS_B1_ENA", QZSS=1, SBAS=1) + [("CFG_RATE_MEAS", 1000)]},
 }
+# u-blox dynamic platform models offered for aircraft (CFG-NAVSPG-DYNMODEL)
+DYN_MODELS = {"keep": ("Leave as is", None), "air1": ("Airborne <1 g: planes, gentle quads", 6),
+              "air2": ("Airborne <2 g: sport quads", 7), "air4": ("Airborne <4 g: racing / aerobatic", 8),
+              "portable": ("Portable: bench / handheld (u-blox default)", 0)}
 DROP_USED_MIN_S = 5      # a sat must have been in the fix this long...
 DROP_GONE_S = 3          # ...and out of it this long, before we call it a drop (no flapping)
 CNO_STEP_DB = 4          # strongest sats falling this much together = broadband/front-end event
@@ -161,6 +165,8 @@ class State:
         self.spec_baseline: dict | None = None
         self.history = collections.deque(maxlen=HISTORY_SECONDS)
         self.events = collections.deque(maxlen=500)
+        self._jam_cand, self._jam_cand_t, self._jam_flips = None, 0.0, []
+        self._good_since, self._prov_set = None, False
         self.event_seq = 0
         self.run: Run | None = None
         self.clog = ContinuousLog(log_dir, rid)
@@ -183,7 +189,7 @@ class State:
         self.phase_name, self.phase_start = None, now()
         self.spec_max_label = "(since start)"
         self._prev_sats: dict = {}
-        self.pos_hist = collections.deque(maxlen=6000)  # (t, lat, lon, alt, fixType) - 10 min at 10 Hz
+        self.pos_hist = collections.deque(maxlen=6000)  # (t, lat, lon, alt, fixType, hAcc) - 10 min at 10 Hz
         self.trail = collections.deque(maxlen=900)      # (t, dE, dN, dU)
         self.ref = None
         self.drift_thresh = 3.0
@@ -286,16 +292,64 @@ class State:
                            f"{ref['lat']:.7f}, {ref['lon']:.7f} - alert above {self.drift_thresh} m")
 
     def avg_position(self, seconds=60, since=None):
+        """Robust reference position: 3D fixes only, the receiver's least-confident fixes dropped
+        (hAcc above 1.5x the median, min 2 m), then the median of what's left, so the start-up
+        convergence and one-off jumps can't drag it."""
         with self.lock:
             t = now()
             t0 = since if since is not None else t - seconds
             pts = [p for p in self.pos_hist if p[0] >= t0 and p[4] in (3, 4)]
             if len(pts) < 5:
                 return None
-            return {"lat": round(statistics.mean(p[1] for p in pts), 8),
-                    "lon": round(statistics.mean(p[2] for p in pts), 8),
-                    "alt": round(statistics.mean(p[3] for p in pts), 2),
-                    "n": len(pts), "source": f"average of {len(pts)} fixes"}
+            accs = [p[5] for p in pts if len(p) > 5 and p[5] is not None]
+            if accs:
+                lim = max(2.0, 1.5 * statistics.median(accs))
+                good = [p for p in pts if len(p) <= 5 or p[5] is None or p[5] <= lim]
+                if len(good) >= 5:
+                    pts = good
+            return {"lat": round(statistics.median(p[1] for p in pts), 8),
+                    "lon": round(statistics.median(p[2] for p in pts), 8),
+                    "alt": round(statistics.median(p[3] for p in pts), 2),
+                    "n": len(pts), "source": f"median of {len(pts)} fixes"}
+
+    def recent_track(self, seconds=60):
+        """Last minute of 3D fixes at ~1 Hz plus their median, for the multi-GPS position plot."""
+        with self.lock:
+            t0, out, last = now() - seconds, [], -1
+            for p in self.pos_hist:
+                if p[0] >= t0 and p[4] in (3, 4) and int(p[0]) != last:
+                    last = int(p[0])
+                    out.append([round(p[1], 8), round(p[2], 8)])
+            if not out:
+                return None
+            return {"track": out, "lat": statistics.median(x[0] for x in out),
+                    "lon": statistics.median(x[1] for x in out), "hAcc": self.pvt.get("hAcc")}
+
+    def _check_ref(self, pvt):
+        """Drop a saved reference that is clearly from somewhere else, and set a provisional one
+        after 60 s of good fixes so the drift view works before the Baseline phase ends."""
+        if pvt["fixType"] not in (3, 4) or (pvt.get("hAcc") or 99) > 10:
+            return
+        t = now()
+        if self.ref:
+            lat0 = self.ref["lat"]
+            d = math.hypot((pvt["lat"] - lat0) * 111_320.0,
+                           (pvt["lon"] - self.ref["lon"]) * 111_320.0 * math.cos(math.radians(lat0)))
+            if d > 200:
+                self.event("ref", f"Saved reference point is {d:.0f} m away (from a previous location): cleared. "
+                                  "A new one is set automatically.", "info")
+                self.ref, self._good_since = None, t
+                self.trail.clear()
+            return
+        if self._good_since is None:
+            self._good_since = t
+        elif t - self._good_since >= 60 and not self._prov_set:
+            r = self.avg_position(60)
+            if r:
+                r["source"] = f"provisional: median of the first {r['n']} good fixes (replaced at the end of Baseline)"
+                self._prov_set = True
+                self.ref = r
+                self.trail.clear()
 
     def _apply_ref(self, pvt):
         if not self.ref or pvt["fixType"] not in (2, 3, 4):
@@ -324,7 +378,8 @@ class State:
 
     def update_pvt(self, pvt):
         with self.lock:
-            self.pos_hist.append((now(), pvt["lat"], pvt["lon"], pvt["alt"], pvt["fixType"]))
+            self.pos_hist.append((now(), pvt["lat"], pvt["lon"], pvt["alt"], pvt["fixType"], pvt.get("hAcc")))
+            self._check_ref(pvt)
             self._apply_ref(pvt)
             if self.last_fix is not None and pvt["fixType"] != self.last_fix:
                 worse = pvt["fixType"] < self.last_fix or pvt["fixType"] not in (2, 3, 4)
@@ -358,14 +413,38 @@ class State:
                 b["jam"] = JAM.get(b["jamState"], "?")
                 b["ant"] = ANT.get(b["antStatus"], "?")
             js = max((b["jamState"] for b in blocks), default=0)
-            if self.last_jam is not None and js != self.last_jam and js != 0:
-                sev = {1: "good", 2: "warn", 3: "alert"}.get(js, "info")
-                self.event("jam", f"Receiver jamming flag: {JAM.get(js)}", sev,
-                           {"jamInd": blocks[0]["jamInd"]})
-            self.last_jam = js
+            self._jam_flag(js, blocks[0].get("jamInd"))
             self.rf = blocks
             if self.run:
                 self.run.log_rf(blocks)
+
+    def _jam_flag(self, js, jam_ind):
+        """The GPS's own jamming flag (MON-RF jammingState). Some modules flip it between 'unknown' and
+        'critical' with no real interference, so: report a state only after it has held for 5 s, rate-limit
+        repeats, and only raise an alert when our own measures agree (gain cut or a high CW indicator)."""
+        t = now()
+        if js != self._jam_cand:
+            self._jam_cand, self._jam_cand_t = js, t
+            self._jam_flips = [x for x in self._jam_flips if t - x < 60] + [t]
+        if js == self.last_jam or t - self._jam_cand_t < 5:
+            return
+        self.last_jam = js
+        if js in (0, 1):               # unknown/disabled or OK: nothing to report
+            return
+        corroborated = (self.gain.get("gainCut") or 0) >= 3 or (jam_ind or 0) >= 80
+        key = ("jam", js, corroborated)
+        if t - self._spur_last.get(key, 0) < 300:
+            return
+        self._spur_last[key] = t
+        flappy = len(self._jam_flips) > 6
+        if corroborated:
+            self.event("jam", f"GPS jamming flag: {JAM.get(js)} (gain cut {self.gain.get('gainCut', 0)} dB, "
+                              f"CW indicator {jam_ind})", "alert" if js == 3 else "warn", {"jamInd": jam_ind})
+        else:
+            self.event("jam", f"GPS reports its own jamming flag as {JAM.get(js)}, but gain and the CW indicator "
+                              f"({jam_ind}) are normal{' and the flag keeps flickering' if flappy else ''}: its jamming "
+                              "monitor is likely over-sensitive on this module. Not treated as interference.",
+                       "info", {"jamInd": jam_ind})
 
     def on_valget(self, msg):
         on = {k[11:]: getattr(msg, k) for k in dir(msg) if k.startswith("CFG_SIGNAL_")}
@@ -682,7 +761,7 @@ class State:
             # Position datum = mean of this Baseline phase's 3D fixes (no hand-picked point needed)
             r = self.avg_position(since=start)
             if r:
-                r["source"] = f"Baseline phase average, {r['n']} fixes"
+                r["source"] = f"Baseline phase median, {r['n']} fixes"
                 self.set_ref(r)
         self.phase_name, self.phase_start = name, now()
         self.reset_max(f"({name})")
@@ -1138,6 +1217,12 @@ class Receiver(threading.Thread):
         self.relay = None            # UbxRelay, set by the Hub
         self.wlock = threading.Lock()
 
+    def log_diag(self, m):
+        t = time.time()
+        if t - getattr(self, "_diag_t", 0) > 30:     # at most every 30 s
+            self._diag_t = t
+            print(f"[{self.st.rid}] DIAG {m}", flush=True)
+
     def log(self, m):
         print(f"[{self.st.rid}] {m}", flush=True)
         with self.st.lock:
@@ -1293,8 +1378,10 @@ class Receiver(threading.Thread):
         except Exception:  # noqa: BLE001
             pass
 
-    def apply_gnss(self, preset, save=False):
-        p = GNSS_PRESETS[preset]
+    def apply_gnss(self, preset, save=False, dyn=None):
+        p = dict(GNSS_PRESETS[preset])
+        if dyn is not None:
+            p["cfg"] = p["cfg"] + [("CFG_NAVSPG_DYNMODEL", dyn)]
         # One message per layer: a VALSET naming a layer the module lacks (most drone M10s have no flash)
         # is refused as a whole, so RAM goes first on its own and the saves are best-effort.
         self.send(UBXMessage.config_set(1, 0, p["cfg"]))          # RAM: takes effect now
@@ -1330,8 +1417,19 @@ class Receiver(threading.Thread):
                     "MON-HW": self.st.on_mon_hw, "MON-SPAN": self.st.on_mon_span,
                     "CFG-VALGET": self.st.on_valget}
         last_data = time.time()
+        next_chk = time.time() + 5
         while True:
+            if time.time() >= next_chk:              # diagnostics: is the Pi keeping up with this GPS?
+                next_chk = time.time() + 5
+                try:
+                    q = self.ser.in_waiting
+                    if q > 4096:
+                        self.log_diag(f"falling behind: {q} bytes waiting in the serial buffer")
+                except Exception:  # noqa: BLE001
+                    pass
             raw, msg = rdr.read()
+            if raw:
+                self.last_msg_t = time.time()
             if raw:
                 if self.relay:
                     self.relay.send(raw)
@@ -1838,6 +1936,7 @@ class Hub:
                     "now": {k: h.get(k) for k in ("cnoTop", "used", "tracked", "gainCut", "agcDrop", "spikes",
                                                   "runErr", "hAcc", "pga", "jamInd")},
                     "gainAlert": st.gain.get("alert"),
+                    "pos": st.recent_track(),
                     "history": [{k: x.get(k) for k in ("t", "cnoTop", "used", "gainCut", "spikes", "runErr", "hAcc")}
                                 for x in st.history if x["t"] > since],
                     "inRun": bool(st.run)})
@@ -1847,8 +1946,50 @@ class Hub:
 # --------------------------------------------------------------------------
 # Web
 # --------------------------------------------------------------------------
+def start_watchdog(hub):
+    """Diagnostics for freezes: if a streaming receiver goes quiet for 8 s, or a web request takes over
+    2 s, write what every thread is doing to the log (journalctl -u gpsscope) so the cause can be found."""
+    import traceback
+
+    def dump(why):
+        print(f"[watchdog] DIAG {why} - thread stacks follow", flush=True)
+        names = {t.ident: t.name for t in threading.enumerate()}
+        for tid, fr in sys._current_frames().items():
+            stack = "".join(traceback.format_stack(fr, limit=6))
+            print(f"[watchdog] --- {names.get(tid, tid)}\n{stack}", flush=True)
+
+    def loop():
+        last_dump = 0
+        while True:
+            time.sleep(2)
+            for st in list(hub.rx.values()):
+                rx = getattr(st, "rxthread", None)
+                lm = getattr(rx, "last_msg_t", None)
+                if rx and lm and "stream" in (st.info.get("status") or "") and time.time() - lm > 8 \
+                        and time.time() - last_dump > 120:
+                    last_dump = time.time()
+                    dump(f"{st.rid}: no GPS message for {time.time() - lm:.0f} s while streaming")
+    threading.Thread(target=loop, daemon=True, name="watchdog").start()
+    return dump
+
+
 def make_app(hub: Hub) -> Flask:
     app = Flask(__name__, static_folder=os.path.join(HERE, "static"))
+    dump = start_watchdog(hub) if not getattr(hub, "sim_mode", False) else None
+
+    @app.before_request
+    def _t0():
+        request.environ["gs.t0"] = time.time()
+
+    @app.after_request
+    def _slow(resp):
+        dt = time.time() - request.environ.get("gs.t0", time.time())
+        if dt > 2:
+            print(f"[web] DIAG slow request {request.path} took {dt:.1f} s ({resp.calculate_content_length() or '?'} bytes)",
+                  flush=True)
+            if dt > 5 and dump:
+                dump(f"request {request.path} took {dt:.1f} s")
+        return resp
 
     def rx_state():
         rid = request.args.get("rx") or (request.get_json(silent=True) or {}).get("rx")
@@ -1896,13 +2037,15 @@ def make_app(hub: Hub) -> Flask:
 
     @app.get("/api/gnss/presets")
     def gnss_presets():
-        return jsonify([{"id": k, "label": v["label"], "note": v["note"]} for k, v in GNSS_PRESETS.items()])
+        return jsonify({"presets": [{"id": k, "label": v["label"], "note": v["note"]} for k, v in GNSS_PRESETS.items()],
+                        "dyn": [{"id": k, "label": v[0]} for k, v in DYN_MODELS.items()]})
 
     @app.post("/api/receivers/<rid>/gnss")
     def set_gnss(rid):
         st = hub.get(rid)
         body = request.get_json(force=True, silent=True) or {}
         preset, save = body.get("preset"), bool(body.get("save"))
+        dyn = DYN_MODELS.get(body.get("dyn") or "keep", DYN_MODELS["keep"])
         if st is None or preset not in GNSS_PRESETS:
             return jsonify({"ok": False, "error": "unknown receiver or preset"}), 400
         if (st.info.get("protver") or 0) < 34 or st.info.get("sim"):
@@ -1910,8 +2053,9 @@ def make_app(hub: Hub) -> Flask:
         rx = getattr(st, "rxthread", None)
         if rx is None or rx.ser is None:
             return jsonify({"ok": False, "error": "receiver not connected"}), 409
-        rx.apply_gnss(preset, save)
+        rx.apply_gnss(preset, save, dyn[1])
         st.event("gnss", f"Constellations set: {GNSS_PRESETS[preset]['label']}"
+                         f"{'' if dyn[1] is None else ' · platform ' + dyn[0].split(':')[0]}"
                          f"{' (also saved to backup RAM / flash)' if save else ' (RAM only, until power-off)'}", "info")
         return jsonify({"ok": True})
 

@@ -251,6 +251,9 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
     <div class="legend ovLeg"></div><div class="chartwrap"><canvas id="ovGain" height="200"></canvas><div class="tip"></div></div></section>
   <section class="card"><h2>Horizontal error by receiver</h2><p class="sub">m, re each receiver's run-baseline mean.</p>
     <div class="legend ovLeg"></div><div class="chartwrap"><canvas id="ovMove" height="200"></canvas><div class="tip"></div></div></section>
+  <section class="card"><h2>Where each GPS thinks it is</h2><p class="sub">Last minute of fixes, metres east/north of the receivers' common centre · dot = median, ring = the GPS's own accuracy estimate (hAcc).</p>
+    <div class="legend ovLeg"></div><div class="chartwrap"><canvas id="ovPos" height="260"></canvas></div>
+    <div id="ovPosNote" style="margin-top:6px"></div></section>
   <section class="card" id="ovCmpCard">
     <h2>Cross-receiver comparison <span class="runlive" id="ovCmpWhich"></span>
       <span class="tools"><button class="btn sm" id="ovCmpLive">Live run</button></span></h2>
@@ -277,6 +280,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
     <label>Set constellations</label>
     <div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <select id="gnssPreset" style="flex:1;min-width:220px"></select>
+        <select id="gnssDyn" title="u-blox dynamic platform model"></select>
         <button class="btn sm" id="gnssSend" type="button">Send to GPS</button></div>
       <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" id="gnssSave" style="width:auto"> Try to keep after power-off (backup RAM / flash)</label>
       <div class="muted" id="gnssNote" style="font-size:12px;margin-top:4px"></div></div>
@@ -406,7 +410,7 @@ dialog#wireDlg::backdrop{background:rgba(0,0,0,.45)}
 <script src="/static/vendor/leaflet.js"></script>
 <script>
 "use strict";
-const PAGE_VERSION = "2026-10-30.3";
+const PAGE_VERSION = "2026-10-30.5";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -500,7 +504,9 @@ function renderTiles(){
     ["AGC reduction", S.gain && S.gain.agcDrop!=null ? (S.gain.agcDrop>0?"−":"")+fmt(S.gain.agcDrop,0)+"<small>%</small>" : "–",
       `<span title="AGC is measured after the gain stage: it FALLS when more energy arrives. Shown here as a drop from its reference, so bigger = louder input. Raw AGC ${rf.agcPct ?? "–"}%, noise ${rf.noise ?? "–"}/ms (also after the gain stage).">vs reference · post-PGA ⓘ</span>`],
     ["CW jamming ind.", rf.jamInd ?? "–", `<span title="u-blox's narrowband (single-tone) jamming indicator, measured after the gain stage. Broadband noise makes the receiver cut its gain, so this number can FALL while interference gets worse. Receiver flag: ${esc(rf.jam||"–")}">narrowband · 0–255 ⓘ</span>`],
-    ["Antenna", rf.ant||"–", statusBadge(rf.antStatus===2?"good":rf.antStatus>=3?"crit":"none", rf.antStatus===2?"OK":"check")],
+    rf.antStatus===2 ? ["Antenna", "OK", statusBadge("good", "supervised")]
+    : rf.antStatus>=3 ? ["Antenna", rf.ant, statusBadge("crit", rf.antStatus===3 ? "short circuit" : "open / not connected")]
+    : ["Antenna", "–", `<span class="muted" title="This GPS doesn't supervise its antenna (MON-RF antenna status 'don't know'), common on modules with a fixed patch antenna. Nothing is wrong.">not reported ⓘ</span>`],
     ["hAcc", (p.fixType>=2 && p.hAcc<1000) ? fmt(p.hAcc,2)+" <small>m</small>" : '<span class="muted">no fix</span>', `pDOP ${p.fixType>=2 ? fmt(p.pDOP,2) : "–"}`],
     ["Position error", drift!=null ? fmt(drift,2)+" <small>m</small>" : "–", S.ref ? statusBadge(driftLvl, `limit ${S.driftThresh} m`) : "no reference set"],
   ];
@@ -889,8 +895,11 @@ function renderRef(){
 
 /* ---------------- events ---------------- */
 const EVICON = {alert:"✕", warn:"!", good:"✓", info:"i", marker:"◆"};
+let evRendered = "";
 function renderEvents(){
-  const list = events.filter(e => evFilter==="all" || e.severity!=="info").slice(-250).reverse();
+  const key = `${curRx()}|${evFilter}|${lastEv}|${events.length}`;   // only rebuild the list when it changed
+  if (key === evRendered) return; evRendered = key;
+  const list = events.filter(e => evFilter==="all" || e.severity!=="info").slice(-150).reverse();
   $("#events").innerHTML = list.map(e=>`<div class="ev ${e.severity}"><span class="t">${hms(e.t)}</span><span class="ic">${EVICON[e.severity]||"i"}</span>
     <span>${esc(e.msg)}${e.run?` <span class="run">· ${esc(e.run)}</span>`:""}</span></div>`).join("") || `<div class="muted">No events yet.</div>`;
 }
@@ -1355,10 +1364,44 @@ function drawOvChart(cv, key, opts){
 }
 function drawOvCharts(){ if (!ovData) return;
   drawOvChart($("#ovCno"), "cnoTop", {unit:"dB-Hz", floor:0}); drawOvChart($("#ovGain"), "gainCut", {unit:"dB", min:0, dec:0});
-  drawOvChart($("#ovMove"), "runErr", {unit:"m", min:0, dec:2});
+  drawOvChart($("#ovMove"), "runErr", {unit:"m", min:0, dec:2}); drawOvPos();
   const lg = ovData.receivers.filter(r=>r.meta.role!=="ignore").map(r=>`<span><i class="sw" style="background:${rxColor(r.id)}"></i>${esc(r.meta.name||r.id)}</span>`).join("");
   document.querySelectorAll(".ovLeg").forEach(x=>x.innerHTML = lg);
   $("#ovLegend").innerHTML = ovData.receivers.filter(r=>r.meta.role!=="ignore").map(r=>`<span><i class="sw" style="background:${rxColor(r.id)}"></i>${esc(r.meta.name||r.id)} <span class="pill ${esc(r.meta.role)}">${esc(r.meta.role)}</span></span>`).join(""); }
+function drawOvPos(){
+  const cv = $("#ovPos"); if (!cv || !ovData) return;
+  const rx = ovData.receivers.filter(r=>r.meta.role!=="ignore" && r.pos);
+  const {g,w,h} = setupCanvas(cv);
+  if (!rx.length){ g.fillStyle = css("--muted"); g.font = "12px system-ui"; g.fillText("Waiting for 3D fixes…", 12, 24); $("#ovPosNote").innerHTML = ""; return; }
+  const lat0 = rx.reduce((a,r)=>a+r.pos.lat,0)/rx.length, lon0 = rx.reduce((a,r)=>a+r.pos.lon,0)/rx.length, k = Math.cos(lat0*Math.PI/180);
+  const en = (la,lo) => [(lo-lon0)*111320*k, (la-lat0)*111320];
+  let R = 1;
+  rx.forEach(r=>{ r._c = en(r.pos.lat, r.pos.lon); r._t = r.pos.track.map(p=>en(p[0],p[1]));
+    R = Math.max(R, Math.hypot(...r._c) + (r.pos.hAcc||0), ...r._t.map(p=>Math.hypot(...p))); });
+  R = Math.ceil(R*1.15);
+  const cx = w/2, cy = h/2, sc = (Math.min(w,h)/2 - 18)/R;
+  g.strokeStyle = css("--grid"); g.lineWidth = 1; g.fillStyle = css("--muted"); g.font = "11px system-ui"; g.textAlign = "left";
+  const step = R <= 2 ? 0.5 : R <= 5 ? 1 : R <= 20 ? 5 : 10;
+  for (let m = step; m <= R; m += step){ g.beginPath(); g.arc(cx, cy, m*sc, 0, 7); g.stroke(); g.fillText(`${m} m`, cx + m*sc*0.71 + 3, cy - m*sc*0.71); }
+  g.beginPath(); g.moveTo(cx, 8); g.lineTo(cx, h-8); g.moveTo(cx-(Math.min(w,h)/2), cy); g.lineTo(cx+(Math.min(w,h)/2), cy); g.stroke();
+  g.fillText("N", cx+4, 16);
+  rx.forEach(r=>{ const col = rxColor(r.id);
+    g.fillStyle = col; g.globalAlpha = .35; r._t.forEach(p=>{ g.beginPath(); g.arc(cx+p[0]*sc, cy-p[1]*sc, 2, 0, 7); g.fill(); });
+    g.globalAlpha = 1; const x = cx + r._c[0]*sc, y = cy - r._c[1]*sc;
+    if (r.pos.hAcc){ g.strokeStyle = col; g.setLineDash([4,3]); g.beginPath(); g.arc(x, y, Math.max(3, r.pos.hAcc*sc), 0, 7); g.stroke(); g.setLineDash([]); }
+    g.beginPath(); g.arc(x, y, 5.5, 0, 7); g.fill(); g.strokeStyle = css("--surface"); g.lineWidth = 1.5; g.stroke();
+    g.fillStyle = css("--ink"); g.font = "600 11px system-ui"; g.fillText(r.meta.name || r.id, x + 9, y - 7); g.font = "11px system-ui"; });
+  // separation between every pair of receivers
+  const rows = [];
+  for (let i=0;i<rx.length;i++) for (let j=i+1;j<rx.length;j++){
+    const a = rx[i], b = rx[j], d = Math.hypot(a._c[0]-b._c[0], a._c[1]-b._c[1]);
+    const tol = 2*Math.hypot(a.pos.hAcc||0, b.pos.hAcc||0);
+    rows.push(`<div>${esc(a.meta.name||a.id)} ↔ ${esc(b.meta.name||b.id)}: <b>${d.toFixed(2)} m</b> apart · ${d <= tol
+      ? statusBadge("good", `within the GPSs' combined accuracy (±${tol.toFixed(1)} m)`)
+      : statusBadge("warn", `more than their combined accuracy (±${tol.toFixed(1)} m): one is offset`)}</div>`); }
+  $("#ovPosNote").innerHTML = rows.join("") + `<div class="muted" style="font-size:12px;margin-top:4px">Antennas a few cm apart should agree to within about their hAcc. A consistent offset points to multipath, a poorer antenna or interference at one of them.</div>`;
+}
+redrawers.set($("#ovPos"), drawOvPos);
 for (const id of ["ovCno","ovGain","ovMove"]){ const cv = $("#"+id); timelineHover(cv); redrawers.set(cv, drawOvCharts); }
 
 async function loadOvCmp(){
@@ -1416,21 +1459,23 @@ async function openSpec(id){
 $("#specCancel").onclick = () => $("#specDlg").close();
 let gnssPresets = null;
 async function loadGnssPresets(){
-  if (!gnssPresets){ let list = []; try { list = await fetch("/api/gnss/presets").then(r=>r.json()); } catch(e){}
-    gnssPresets = Object.fromEntries(list.map(p=>[p.id, p]));
-    $("#gnssPreset").innerHTML = list.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join(""); }
+  if (!gnssPresets){ let d = {presets:[], dyn:[]}; try { d = await fetch("/api/gnss/presets").then(r=>r.json()); } catch(e){}
+    gnssPresets = Object.fromEntries(d.presets.map(p=>[p.id, p]));
+    $("#gnssPreset").innerHTML = d.presets.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("");
+    $("#gnssDyn").innerHTML = d.dyn.map(p=>`<option value="${p.id}" ${p.id==="air2"?"selected":""}>${esc(p.label)}</option>`).join(""); }
   gnssNote();
 }
 function gnssNote(){ const v = gnssPresets && gnssPresets[$("#gnssPreset").value]; if (!v) return;
-  $("#gnssNote").innerHTML = esc(v.note) + ($("#gnssSave").checked
+  const dynTxt = {keep:"", air1:" Platform: airborne <1 g, the smoothest model, for planes and gentle flying.", air2:" Platform: airborne <2 g, a good default for most quads.", air4:" Platform: airborne <4 g, for racing/aerobatic flying (less smoothing).", portable:" Platform: portable (u-blox factory), meant for handheld/bench use, not flight."}[$("#gnssDyn").value] || "";
+  $("#gnssNote").innerHTML = esc(v.note) + esc(dynTxt) + ($("#gnssSave").checked
     ? " <b>Saved</b> to the GPS's backup RAM, and to flash if it has any. Most drone M10s have no flash, so it lasts only while the GPS's backup battery/supercap is charged. A flight controller may also set its own constellations at boot, so set them in the FC's GPS settings too."
     : " RAM only: gone at the next power-off, so the FC's own setup comes back."); }
-$("#gnssPreset").onchange = gnssNote; $("#gnssSave").onchange = gnssNote;
+$("#gnssPreset").onchange = gnssNote; $("#gnssSave").onchange = gnssNote; $("#gnssDyn").onchange = gnssNote;
 $("#gnssSend").onclick = async () => {
   const b = $("#gnssSend"); b.disabled = true; b.textContent = "Sending…";
   try {
     const r = await fetch(`/api/receivers/${encodeURIComponent(specRx)}/gnss`, {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({preset: $("#gnssPreset").value, save: $("#gnssSave").checked})}).then(r=>r.json());
+      body: JSON.stringify({preset: $("#gnssPreset").value, dyn: $("#gnssDyn").value, save: $("#gnssSave").checked})}).then(r=>r.json());
     $("#gnssNote").innerHTML = r.ok ? statusBadge("good", "Sent. The GPS restarts tracking, so expect a few seconds of lower C/N0 while it re-acquires.")
                                     : statusBadge("crit", esc(r.error || "failed"));
     const before = $("#specGnss").textContent;
